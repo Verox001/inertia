@@ -1,6 +1,7 @@
-import { Deferred, Head } from '@inertiajs/react'
+import {Deferred, Head, usePage, useForm} from '@inertiajs/react'
 import DeferredUsers from '../Components/DeferredUsers'
 import Layout from '../Components/Layout'
+import {useEffect} from "react";
 
 const Defer = ({
   users,
@@ -22,6 +23,15 @@ const Defer = ({
     name: string
   }[]
 }) => {
+  const props = usePage()
+  console.log(props);
+
+  const { data, post } = useForm({});
+
+  useEffect(() => {
+    post('/sleepy/5');
+  }, []);
+
   return (
     <>
       <Head title="Form" />
