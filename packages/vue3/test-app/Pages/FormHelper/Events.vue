@@ -1,5 +1,17 @@
-<script setup>
+<script setup lang="ts">
+import { CancelToken, Errors, Page, PendingVisit, Progress } from '@inertiajs/core'
 import { useForm, usePage } from '@inertiajs/vue3'
+
+declare global {
+  interface Window {
+    events: string[]
+    data: {
+      type: string
+      data: unknown
+      event: string | null
+    }[]
+  }
+}
 
 window.events = []
 window.data = []
@@ -9,11 +21,11 @@ const form = useForm({
   remember: false,
 })
 
-const pushEvent = (message) => {
+const pushEvent = (message: string) => {
   window.events.push(message)
 }
 
-const pushData = (event, type, data) => {
+const pushData = (event: string | null, type: string, data: unknown) => {
   window.data.push({
     type,
     data,
@@ -102,7 +114,7 @@ const errorsSetOnError = () => {
 const onBeforeVisit = () => {
   form.post('/sleep', {
     ...callbacks({
-      onBefore: (visit) => {
+      onBefore: (visit: PendingVisit) => {
         pushEvent('onBefore')
         pushData('onBefore', 'visit', visit)
       },
@@ -113,7 +125,7 @@ const onBeforeVisit = () => {
 const onBeforeVisitCancelled = () => {
   form.post('/sleep', {
     ...callbacks({
-      onBefore: (visit) => {
+      onBefore: () => {
         pushEvent('onBefore')
         return false
       },
@@ -124,7 +136,7 @@ const onBeforeVisitCancelled = () => {
 const onStartVisit = () => {
   form.post('/form-helper/events', {
     ...callbacks({
-      onStart: (visit) => {
+      onStart: (visit: PendingVisit) => {
         pushEvent('onStart')
         pushData('onStart', 'visit', visit)
       },
@@ -140,7 +152,7 @@ const onProgressVisit = () => {
     }))
     .post('/dump/post', {
       ...callbacks({
-        onProgress: (event) => {
+        onProgress: (event: Progress) => {
           pushEvent('onProgress')
           pushData('onProgress', 'progressEvent', event)
         },
@@ -151,7 +163,7 @@ const onProgressVisit = () => {
 const cancelledVisit = () => {
   form.post('/sleep', {
     ...callbacks({
-      onCancelToken: (token) => {
+      onCancelToken: (token: CancelToken) => {
         pushEvent('onCancelToken')
 
         setTimeout(() => {
@@ -163,10 +175,73 @@ const cancelledVisit = () => {
   })
 }
 
+const onCancelProcessing = () => {
+  form.post('/sleep', {
+    ...callbacks({
+      onCancelToken: (token: CancelToken) => {
+        pushEvent('onCancelToken')
+        pushData('onCancelToken', 'processing', form.processing)
+
+        setTimeout(() => {
+          token.cancel()
+        }, 10)
+      },
+      onStart: () => {
+        pushEvent('onStart')
+        pushData('onStart', 'processing', form.processing)
+      },
+      onCancel: () => {
+        pushEvent('onCancel')
+        pushData('onCancel', 'processing', form.processing)
+      },
+      onFinish: () => {
+        pushEvent('onFinish')
+        pushData('onFinish', 'processing', form.processing)
+      },
+    }),
+  })
+}
+
+const onCancelProgress = () => {
+  form
+    .transform((data) => ({
+      ...data,
+      file: new File(['foobar'], 'example.bin'),
+    }))
+    .post('/sleep', {
+      ...callbacks({
+        onCancelToken: (token: CancelToken) => {
+          pushEvent('onCancelToken')
+          pushData('onCancelToken', 'progress', form.progress)
+
+          setTimeout(() => {
+            token.cancel()
+          }, 10)
+        },
+        onStart: () => {
+          pushEvent('onStart')
+          pushData('onStart', 'progress', form.progress)
+        },
+        onProgress: () => {
+          pushEvent('onProgress')
+          pushData('onProgress', 'progress', form.progress)
+        },
+        onCancel: () => {
+          pushEvent('onCancel')
+          pushData('onCancel', 'progress', form.progress)
+        },
+        onFinish: () => {
+          pushEvent('onFinish')
+          pushData('onFinish', 'progress', form.progress)
+        },
+      }),
+    })
+}
+
 const onSuccessVisit = () => {
   form.post('/dump/post', {
     ...callbacks({
-      onSuccess: (page) => {
+      onSuccess: (page: Page) => {
         pushEvent('onSuccess')
         pushData('onSuccess', 'page', page)
       },
@@ -177,7 +252,7 @@ const onSuccessVisit = () => {
 const onSuccessPromiseVisit = () => {
   form.post('/dump/post', {
     ...callbacks({
-      onSuccess: (page) => {
+      onSuccess: () => {
         pushEvent('onSuccess')
 
         setTimeout(() => pushEvent('onFinish should have been fired by now if Promise functionality did not work'), 5)
@@ -187,10 +262,20 @@ const onSuccessPromiseVisit = () => {
   })
 }
 
+const onSuccessResetValue = () => {
+  form.post(page.url, {
+    ...callbacks({
+      onSuccess: () => {
+        form.reset()
+      },
+    }),
+  })
+}
+
 const onErrorVisit = () => {
   form.post('/form-helper/events/errors', {
     ...callbacks({
-      onError: (errors) => {
+      onError: (errors: Errors) => {
         pushEvent('onError')
         pushData('onError', 'errors', errors)
       },
@@ -201,7 +286,7 @@ const onErrorVisit = () => {
 const onErrorPromiseVisit = () => {
   form.post('/form-helper/events/errors', {
     ...callbacks({
-      onError: (errors) => {
+      onError: () => {
         pushEvent('onError')
 
         setTimeout(() => pushEvent('onFinish should have been fired by now if Promise functionality did not work'), 5)
@@ -386,6 +471,7 @@ const progressNoFiles = () => {
     <button @click.prevent="onSuccessProcessing" class="success-processing">onSuccess resets processing</button>
     <button @click.prevent="onSuccessResetErrors" class="success-reset-errors">onSuccess resets errors</button>
     <button @click.prevent="onSuccessPromiseVisit" class="success-promise">onSuccess promise</button>
+    <button @click.prevent="onSuccessResetValue" class="success-reset-value">onSuccess resets value</button>
 
     <button @click.prevent="onErrorVisit" class="error">onError</button>
     <button @click.prevent="onErrorProgress" class="error-progress">onError progress property</button>
@@ -393,9 +479,15 @@ const progressNoFiles = () => {
     <button @click.prevent="errorsSetOnError" class="errors-set-on-error">Errors set on error</button>
     <button @click.prevent="onErrorPromiseVisit" class="error-promise">onError promise</button>
 
+    <button @click.prevent="onCancelProcessing" class="cancel-processing">onCancel resets processing</button>
+    <button @click.prevent="onCancelProgress" class="cancel-progress">onCancel progress property</button>
+
     <button @click.prevent="progressNoFiles" class="no-progress">progress no files</button>
 
     <span class="success-status">Form was {{ form.wasSuccessful ? '' : 'not ' }}successful</span>
     <span class="recently-status">Form was {{ form.recentlySuccessful ? '' : 'not ' }}recently successful</span>
+
+    <input type="text" class="name-input" v-model="form.name" />
+    <input type="checkbox" class="remember-input" v-model="form.remember" />
   </div>
 </template>

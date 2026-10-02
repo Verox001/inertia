@@ -1,11 +1,11 @@
 import { Link, usePage } from '@inertiajs/react'
 
-export default function Layout({ children }) {
-  const { appName } = usePage<{ appName: string }>().props
+export default function Layout({ children, padding = true }: { children: React.ReactNode; padding?: boolean }) {
+  const { appName } = usePage().props
 
   return (
     <>
-      <nav className="flex items-center space-x-6 bg-slate-800 px-10 py-6 text-white">
+      <nav className="flex items-center space-x-6 overflow-scroll bg-slate-800 px-10 py-6 text-white">
         <div className="rounded-lg bg-slate-700 px-4 py-1">{appName}</div>
         <Link href="/" className="hover:underline" prefetch>
           Home
@@ -17,7 +17,13 @@ export default function Layout({ children }) {
           Article
         </Link>
         <Link href="/form" className="hover:underline" prefetch={['mount', 'click']} stale-after="1m">
-          Form
+          useForm
+        </Link>
+        <Link href="/form-component" className="hover:underline">
+          {'<Form>'}
+        </Link>
+        <Link href="/form-component/precognition" className="hover:underline">
+          Precognition
         </Link>
         <Link href="/async" className="hover:underline">
           Async
@@ -28,11 +34,41 @@ export default function Layout({ children }) {
         <Link href="/poll" className="hover:underline">
           Poll
         </Link>
+        <Link href="/chat" className="hover:underline">
+          Chat
+        </Link>
+        <Link href="/photo-grid" className="hover:underline">
+          Photo Grid
+        </Link>
+        <Link href="/photo-grid/horizontal" className="hover:underline">
+          Photo Row
+        </Link>
+        <Link href="/data-table" className="hover:underline">
+          Table
+        </Link>
+        <Link href="/once/1" className="hover:underline">
+          Once
+        </Link>
+        <Link href="/optimistic" className="hover:underline">
+          Optimistic
+        </Link>
+        <Link href="/flash" className="hover:underline">
+          Flash
+        </Link>
+        <Link href="/big-integers" className="hover:underline">
+          Big Integers
+        </Link>
+        <Link href="/error/404" className="hover:underline">
+          Errors
+        </Link>
+        <Link href="/ssr-debug" className="hover:underline">
+          SSR Debug
+        </Link>
         <Link href="/logout" method="post" className="hover:underline">
           Logout
         </Link>
       </nav>
-      <main className="px-10 py-8">{children}</main>
+      <main className={padding ? 'px-10 py-8' : ''}>{children}</main>
     </>
   )
 }

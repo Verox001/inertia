@@ -1,13 +1,10 @@
-<script>
+<script setup lang="ts">
+import { Link, usePage } from '@inertiajs/vue3'
 import Layout from '@/Layouts/SiteLayout.vue'
 
-export default {
+defineOptions({
   layout: Layout,
-}
-</script>
-
-<script setup>
-import { Link, usePage } from '@inertiajs/vue3'
+})
 
 window._inertia_page_props = usePage().props
 </script>

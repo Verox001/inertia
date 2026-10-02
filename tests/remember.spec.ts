@@ -40,6 +40,19 @@ test.describe('Remember (local state caching)', () => {
     await expect(page.locator('#name')).toHaveValue('A')
     await expect(page.locator('#remember')).toBeChecked()
     await expect(page.locator('#untracked')).toHaveValue('')
+
+    // Try again with updated values
+    await page.fill('#name', 'C')
+    await page.uncheck('#remember')
+    await page.getByRole('link', { name: 'Navigate away' }).click()
+
+    await shouldBeDumpPage(page, 'get')
+
+    await page.goBack()
+
+    await expect(page).toHaveURL('remember/object')
+    await expect(page.locator('#name')).toHaveValue('C')
+    await expect(page.locator('#remember')).not.toBeChecked()
   })
 
   test('restores remembered data when pressing the back button', async ({ page }) => {
@@ -73,6 +86,20 @@ test.describe('Remember (local state caching)', () => {
     await expect(page.locator('.b-name')).toHaveValue('B1')
     await expect(page.locator('.b-remember')).toBeChecked()
     await expect(page.locator('.b-untracked')).toHaveValue('')
+
+    // Try again with updated values
+    await page.fill('#name', 'E')
+    await page.uncheck('#remember')
+
+    await page.getByRole('link', { name: 'Navigate away' }).click()
+
+    await shouldBeDumpPage(page, 'get')
+
+    await page.goBack()
+
+    await expect(page).toHaveURL('remember/multiple-components')
+    await expect(page.locator('#name')).toHaveValue('E')
+    await expect(page.locator('#remember')).not.toBeChecked()
   })
 
   test('restores remembered data when pressing the back button from another website', async ({ page }) => {
@@ -113,6 +140,46 @@ test.describe('Remember (local state caching)', () => {
     await expect(page.locator('.b-remember')).toBeChecked()
     // This is seems to be browser dependent? Sometimes it's empty, sometimes it's the last value
     // await expect(page.locator('.b-untracked')).toHaveValue('')
+
+    // Try again with updated values
+    await page.fill('#name', 'E')
+    await page.uncheck('#remember')
+
+    await page.getByRole('link', { name: 'Navigate off-site' }).click()
+
+    await expect(page).toHaveURL('non-inertia')
+
+    await page.goBack()
+
+    await page.waitForURL('remember/multiple-components')
+    await expect(page.locator('#name')).toHaveValue('E')
+    await expect(page.locator('#remember')).not.toBeChecked()
+    // This is seems to be browser dependent? Sometimes it's empty, sometimes it's the last value
+    // await expect(page.locator('#untracked')).toHaveValue('')
+  })
+
+  test('does not restore remembered data after browser refresh', async ({ page }) => {
+    await page.goto('remember/object')
+
+    await page.fill('#name', 'RefreshTest')
+    await page.check('#remember')
+    await page.fill('#untracked', 'ShouldNotRemember')
+
+    await page.getByRole('link', { name: 'Navigate away' }).click()
+    await shouldBeDumpPage(page, 'get')
+
+    await page.goBack()
+    await expect(page).toHaveURL('remember/object')
+    await expect(page.locator('#name')).toHaveValue('RefreshTest')
+    await expect(page.locator('#remember')).toBeChecked()
+    await expect(page.locator('#untracked')).toHaveValue('')
+
+    await page.reload()
+
+    // After refresh, fields should be empty (not restored from remember state)
+    await expect(page.locator('#name')).toHaveValue('')
+    await expect(page.locator('#remember')).not.toBeChecked()
+    await expect(page.locator('#untracked')).toHaveValue('')
   })
 
   test.describe('form helper', () => {
@@ -193,6 +260,25 @@ test.describe('Remember (local state caching)', () => {
       await expect(page.locator('#handle')).toHaveValue('B')
       await expect(page.locator('#remember')).toBeChecked()
       await expect(page.locator('#untracked')).not.toHaveValue('C')
+
+      // Try again with updated values
+      await page.fill('#name', 'D')
+      await page.fill('#handle', 'E')
+      await page.uncheck('#remember')
+      await page.fill('#untracked', 'F')
+
+      await page.getByRole('link', { name: 'Navigate away' }).click()
+
+      await shouldBeDumpPage(page, 'get')
+
+      await page.goBack()
+
+      await expect(page).toHaveURL('remember/form-helper/remember')
+
+      await expect(page.locator('#name')).toHaveValue('D')
+      await expect(page.locator('#handle')).toHaveValue('E')
+      await expect(page.locator('#remember')).not.toBeChecked()
+      await expect(page.locator('#untracked')).not.toHaveValue('F')
     })
 
     test('remembers form errors when tracked', async ({ page }) => {
@@ -224,6 +310,28 @@ test.describe('Remember (local state caching)', () => {
       await expect(page.locator('#handle')).toHaveValue('B')
       await expect(page.locator('#remember')).toBeChecked()
       await expect(page.locator('#untracked')).not.toHaveValue('C')
+      await expect(page.locator('.name_error')).toBeVisible()
+      await expect(page.locator('.handle_error')).toBeVisible()
+      await expect(page.locator('.remember_error')).not.toBeVisible()
+
+      // Try again with updated values
+      await page.fill('#name', 'D')
+      await page.fill('#handle', 'E')
+      await page.uncheck('#remember')
+      await page.fill('#untracked', 'F')
+
+      await page.getByRole('link', { name: 'Navigate away' }).click()
+
+      await shouldBeDumpPage(page, 'get')
+
+      await page.goBack()
+
+      await expect(page).toHaveURL('remember/form-helper/remember')
+
+      await expect(page.locator('#name')).toHaveValue('D')
+      await expect(page.locator('#handle')).toHaveValue('E')
+      await expect(page.locator('#remember')).not.toBeChecked()
+      await expect(page.locator('#untracked')).not.toHaveValue('F')
       await expect(page.locator('.name_error')).toBeVisible()
       await expect(page.locator('.handle_error')).toBeVisible()
       await expect(page.locator('.remember_error')).not.toBeVisible()
@@ -278,5 +386,51 @@ test.describe('Remember (local state caching)', () => {
       await expect(page.locator('.handle_error')).toBeVisible()
       await expect(page.locator('.remember_error')).not.toBeVisible()
     })
+
+    test('it excludes fields via dontRemember', async ({ page }) => {
+      await page.goto('remember/form-helper/password')
+
+      await page.fill('#username', 'A')
+      await page.fill('#password', 'B')
+
+      await page.getByRole('link', { name: 'Navigate away' }).click()
+
+      await shouldBeDumpPage(page, 'get')
+
+      await page.goBack()
+
+      await expect(page).toHaveURL('remember/form-helper/password')
+
+      await expect(page.locator('#username')).toHaveValue('A')
+      await expect(page.locator('#password')).toHaveValue('')
+    })
+  })
+
+  test('restore without types', async ({ page }) => {
+    await page.goto('remember/router')
+
+    await expect(page.getByText('Foo: -')).toBeVisible()
+    await expect(page.getByText('Bar: 0')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Remember' }).click()
+    await page.waitForTimeout(100) // Wait for remember to complete
+    await page.getByRole('button', { name: 'Restore', exact: true }).click()
+
+    await expect(page.getByText('Foo: foo')).toBeVisible()
+    await expect(page.getByText('Bar: 42')).toBeVisible()
+  })
+
+  test('restore with types', async ({ page }) => {
+    await page.goto('remember/router')
+
+    await expect(page.getByText('Foo: -')).toBeVisible()
+    await expect(page.getByText('Bar: 0')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Remember' }).click()
+    await page.waitForTimeout(100) // Wait for remember to complete
+    await page.getByRole('button', { name: 'Restore Typed' }).click()
+
+    await expect(page.getByText('Foo: foo')).toBeVisible()
+    await expect(page.getByText('Bar: 42')).toBeVisible()
   })
 })

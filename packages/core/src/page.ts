@@ -1,23 +1,18 @@
+import { cloneDeep } from 'es-toolkit'
+import { get, set } from 'es-toolkit/compat'
 import { eventHandler } from './eventHandler'
 import { fireNavigateEvent } from './events'
 import { history } from './history'
+import { prefetchedRequests } from './prefetched'
 import { Scroll } from './scroll'
-import {
-  Component,
-  Page,
-  PageEvent,
-  PageHandler,
-  PageResolver,
-  PreserveStateOption,
-  RouterInitParams,
-  VisitOptions,
-} from './types'
+import { Component, FlashData, Page, PageEvent, PageHandler, PageResolver, RouterInitParams, Visit } from './types'
 import { hrefToUrl, isSameUrlWithoutHash } from './url'
 
 class CurrentPage {
   protected page!: Page
-  protected swapComponent!: PageHandler
+  protected swapComponent!: PageHandler<any>
   protected resolveComponent!: PageResolver
+  protected onFlashCallback?: (flash: Page['flash']) => void
   protected componentId = {}
   protected listeners: {
     event: PageEvent
@@ -25,11 +20,27 @@ class CurrentPage {
   }[] = []
   protected isFirstPageLoad = true
   protected cleared = false
+  protected pendingDeferredProps: Pick<Page, 'deferredProps' | 'url' | 'component'> | null = null
+  protected historyQuotaExceeded = false
+  protected optimisticBaseline: Partial<Page['props']> = {}
+  protected pendingOptimistics: { id: number; callback: (props: Page['props']) => Partial<Page['props']> | void }[] = []
+  protected optimisticCounter = 0
+  protected confirmedOptimisticId = 0
 
-  public init({ initialPage, swapComponent, resolveComponent }: RouterInitParams) {
-    this.page = initialPage
+  public init<ComponentType = Component>({
+    initialPage,
+    swapComponent,
+    resolveComponent,
+    onFlash,
+  }: RouterInitParams<ComponentType>) {
+    this.page = { ...initialPage, flash: initialPage.flash ?? {}, rescuedProps: initialPage.rescuedProps ?? [] }
     this.swapComponent = swapComponent
     this.resolveComponent = resolveComponent
+    this.onFlashCallback = onFlash
+
+    eventHandler.on('historyQuotaExceeded', () => {
+      this.historyQuotaExceeded = true
+    })
 
     return this
   }
@@ -40,8 +51,33 @@ class CurrentPage {
       replace = false,
       preserveScroll = false,
       preserveState = false,
-    }: Partial<Pick<VisitOptions, 'replace' | 'preserveScroll' | 'preserveState'>> = {},
+      viewTransition = false,
+      cached = false,
+      initialRender = false,
+      visitId,
+    }: {
+      replace?: boolean
+      preserveScroll?: boolean
+      preserveState?: boolean
+      viewTransition?: Visit['viewTransition']
+      cached?: boolean
+      initialRender?: boolean
+      visitId?: string
+    } = {},
   ): Promise<void> {
+    if (Object.keys(page.deferredProps || {}).length) {
+      this.pendingDeferredProps = {
+        deferredProps: page.deferredProps,
+        component: page.component,
+        url: page.url,
+      }
+
+      // Preserve original deferred props for back button handling
+      if (page.initialDeferredProps === undefined) {
+        page.initialDeferredProps = page.deferredProps
+      }
+    }
+
     this.componentId = {}
 
     const componentId = this.componentId
@@ -50,7 +86,7 @@ class CurrentPage {
       history.clear()
     }
 
-    return this.resolve(page.component).then((component) => {
+    return this.resolve(page.component, page).then((component) => {
       if (componentId !== this.componentId) {
         // Component has changed since we started resolving this component, bail
         return
@@ -58,16 +94,30 @@ class CurrentPage {
 
       page.rememberedState ??= {}
 
-      const location = typeof window !== 'undefined' ? window.location : new URL(page.url)
+      const isServer = typeof window === 'undefined'
+      const location = !isServer ? window.location : new URL(page.url)
+      const scrollRegions = !isServer && preserveScroll ? Scroll.getScrollRegions() : []
       replace = replace || isSameUrlWithoutHash(hrefToUrl(page.url), location)
 
-      return new Promise((resolve) => {
-        replace ? history.replaceState(page, () => resolve(null)) : history.pushState(page, () => resolve(null))
-      }).then(() => {
+      // Clear flash data from the page object, we don't want it when navigating back/forward...
+      const pageForHistory = { ...page, flash: {} }
+
+      return new Promise<void>((resolve) =>
+        replace ? history.replaceState(pageForHistory, resolve) : history.pushState(pageForHistory, resolve),
+      ).then(() => {
         const isNewComponent = !this.isTheSame(page)
+
+        if (!isNewComponent && Object.keys(page.props.errors || {}).length > 0) {
+          // Don't use view transition if the page stays the same and there are (new) errors...
+          viewTransition = false
+        }
 
         this.page = page
         this.cleared = false
+
+        if (this.hasOnceProps()) {
+          prefetchedRequests.updateCachedOncePropsFromCurrentPage()
+        }
 
         if (isNewComponent) {
           this.fireEventsFor('newComponent')
@@ -79,15 +129,41 @@ class CurrentPage {
 
         this.isFirstPageLoad = false
 
-        return this.swap({ component, page, preserveState }).then(() => {
-          if (!preserveScroll) {
+        if (this.historyQuotaExceeded) {
+          // If we exceeded the history quota, don't attempt to swap the
+          // component as we're performing a full page reload instead.
+          this.historyQuotaExceeded = false
+          return
+        }
+
+        return this.swap({
+          component,
+          page,
+          preserveState,
+          viewTransition,
+          initialRender,
+        }).then(() => {
+          if (preserveScroll) {
+            // Scroll regions must be explicitly restored since the DOM elements are destroyed
+            // and recreated during the component 'swap'. Document scroll is naturally
+            // preserved as the document element itself persists across navigations.
+            window.requestAnimationFrame(() => Scroll.restoreScrollRegions(scrollRegions))
+          } else {
             Scroll.reset()
           }
 
-          eventHandler.fireInternalEvent('loadDeferredProps')
+          if (
+            this.pendingDeferredProps &&
+            this.pendingDeferredProps.component === page.component &&
+            this.pendingDeferredProps.url === page.url
+          ) {
+            eventHandler.fireInternalEvent('loadDeferredProps', this.pendingDeferredProps.deferredProps)
+          }
+
+          this.pendingDeferredProps = null
 
           if (!replace) {
-            fireNavigateEvent(page)
+            fireNavigateEvent(page, { cached, visitId })
           }
         })
       })
@@ -99,14 +175,14 @@ class CurrentPage {
     {
       preserveState = false,
     }: {
-      preserveState?: PreserveStateOption
+      preserveState?: boolean
     } = {},
   ) {
-    return this.resolve(page.component).then((component) => {
+    return this.resolve(page.component, page).then((component) => {
       this.page = page
       this.cleared = false
       history.setCurrent(page)
-      return this.swap({ component, page, preserveState })
+      return this.swap({ component, page, preserveState, viewTransition: false })
     })
   }
 
@@ -122,8 +198,29 @@ class CurrentPage {
     return this.page
   }
 
+  public getWithoutFlashData(): Page {
+    return { ...this.page, flash: {} }
+  }
+
+  public hasOnceProps(): boolean {
+    return Object.keys(this.page.onceProps ?? {}).length > 0
+  }
+
   public merge(data: Partial<Page>): void {
     this.page = { ...this.page, ...data }
+  }
+
+  public setPropsQuietly(props: Page['props']): Promise<unknown> {
+    this.page = { ...this.page, props }
+
+    return this.resolve(this.page.component, this.page).then((component) => {
+      return this.swap({ component, page: this.page, preserveState: true, viewTransition: false })
+    })
+  }
+
+  public setFlash(flash: FlashData): void {
+    this.page = { ...this.page, flash }
+    this.onFlashCallback?.(flash)
   }
 
   public setUrlHash(hash: string): void {
@@ -140,16 +237,123 @@ class CurrentPage {
     component,
     page,
     preserveState,
+    viewTransition,
+    initialRender = false,
   }: {
     component: Component
     page: Page
-    preserveState: PreserveStateOption
+    preserveState: boolean
+    viewTransition: Visit['viewTransition']
+    initialRender?: boolean
   }): Promise<unknown> {
-    return this.swapComponent({ component, page, preserveState })
+    const doSwap = () => this.swapComponent({ component, page, preserveState, initialRender })
+
+    if (!viewTransition || !document?.startViewTransition || document.visibilityState === 'hidden') {
+      return doSwap()
+    }
+
+    const viewTransitionCallback = typeof viewTransition === 'boolean' ? () => null : viewTransition
+
+    // The browser skips this transition when a newer one supersedes it, when the tab goes hidden
+    // mid-flight, or when the swap times out, always rejecting with a DOMException. That's
+    // expected, so swallow it and let a failing swap reject as it normally would.
+    const ignoreSkippedTransition = (promise: Promise<unknown>) => {
+      promise.catch((error) => {
+        if (!(error instanceof DOMException)) {
+          throw error
+        }
+      })
+    }
+
+    return new Promise((resolve) => {
+      const transitionResult = document.startViewTransition(() => doSwap().then(resolve))
+
+      ignoreSkippedTransition(transitionResult.ready)
+      ignoreSkippedTransition(transitionResult.finished)
+      ignoreSkippedTransition(transitionResult.updateCallbackDone)
+
+      viewTransitionCallback(transitionResult)
+    })
   }
 
-  public resolve(component: string): Promise<Component> {
-    return Promise.resolve(this.resolveComponent(component))
+  public resolve(component: string, page?: Page): Promise<Component> {
+    return Promise.resolve(this.resolveComponent(component, page))
+  }
+
+  public nextOptimisticId(): number {
+    return ++this.optimisticCounter
+  }
+
+  public markOptimisticConfirmed(id: number): void {
+    this.confirmedOptimisticId = Math.max(this.confirmedOptimisticId, id)
+  }
+
+  public hasConfirmedOptimisticAfter(id: number): boolean {
+    return this.confirmedOptimisticId > id
+  }
+
+  public setBaseline(key: string, value: unknown): void {
+    if (!(key in this.optimisticBaseline)) {
+      this.optimisticBaseline[key] = value
+    }
+  }
+
+  public updateBaseline(key: string, value: unknown): void {
+    if (key in this.optimisticBaseline) {
+      this.optimisticBaseline[key] = value
+    }
+  }
+
+  public hasBaseline(key: string): boolean {
+    return key in this.optimisticBaseline
+  }
+
+  public registerOptimistic(id: number, callback: (props: Page['props']) => Partial<Page['props']> | void): void {
+    this.pendingOptimistics.push({ id, callback })
+  }
+
+  public unregisterOptimistic(id: number): void {
+    this.pendingOptimistics = this.pendingOptimistics.filter((entry) => entry.id !== id)
+  }
+
+  public replayOptimistics(): Partial<Page['props']> {
+    const baselineKeys = Object.keys(this.optimisticBaseline)
+
+    if (baselineKeys.length === 0) {
+      return {}
+    }
+
+    const props = cloneDeep(this.page.props)
+
+    for (const key of baselineKeys) {
+      props[key] = cloneDeep(this.optimisticBaseline[key])
+    }
+
+    for (const { callback } of this.pendingOptimistics) {
+      const result = callback(cloneDeep(props))
+
+      if (result) {
+        Object.assign(props, result)
+      }
+    }
+
+    const replayedProps: Partial<Page['props']> = {}
+
+    for (const key of baselineKeys) {
+      replayedProps[key] = props[key]
+    }
+
+    return replayedProps
+  }
+
+  public pendingOptimisticCount(): number {
+    return this.pendingOptimistics.length
+  }
+
+  public clearOptimisticState(): void {
+    this.optimisticBaseline = {}
+    this.pendingOptimistics = []
+    this.confirmedOptimisticId = 0
   }
 
   public isTheSame(page: Page): boolean {
@@ -166,6 +370,21 @@ class CurrentPage {
 
   public fireEventsFor(event: PageEvent): void {
     this.listeners.filter((listener) => listener.event === event).forEach((listener) => listener.callback())
+  }
+
+  public mergeOncePropsIntoResponse(response: Page, { force = false }: { force?: boolean } = {}): void {
+    Object.entries(response.onceProps ?? {}).forEach(([key, onceProp]) => {
+      const existingOnceProp = this.page.onceProps?.[key]
+
+      if (existingOnceProp === undefined) {
+        return
+      }
+
+      if (force || get(response.props, onceProp.prop) === undefined) {
+        set(response.props, onceProp.prop, get(this.page.props, existingOnceProp.prop))
+        response.onceProps![key].expiresAt = existingOnceProp.expiresAt
+      }
+    })
   }
 }
 

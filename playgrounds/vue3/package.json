@@ -3,23 +3,25 @@
   "private": true,
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc && vite build && vite build --ssr"
+    "build": "vite build && vite build --ssr"
   },
   "devDependencies": {
-    "@inertiajs/vue3": "2.0.3",
-    "@vitejs/plugin-vue": "^5.0.5",
-    "@volar/vue-typescript": "^1.0.22",
-    "@vue/server-renderer": "^3.3.4",
-    "autoprefixer": "^10.4.13",
-    "axios": "^1.6.0",
-    "laravel-vite-plugin": "^1.0.5",
-    "lodash": "^4.17.19",
-    "postcss": "^8.4.31",
-    "tailwindcss": "^3.2.4",
-    "typescript": "^5.5.4",
-    "vite": "^5.3.4",
-    "vue": "^3.3.4",
-    "vue-tsc": "^2.0.0"
+    "@inertiajs/core": "workspace:*",
+    "@inertiajs/vite": "workspace:*",
+    "@inertiajs/vue3": "workspace:*",
+    "@laravel/stream-vue": "^0.3.13",
+    "@tailwindcss/typography": "^0.5.19",
+    "@tailwindcss/vite": "^4.2.2",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "@vue/server-renderer": "^3.5.29",
+    "autosize": "^6.0.1",
+    "laravel-vite-plugin": "^3.0.0",
+    "marked": "^17.0.3",
+    "tailwindcss": "^4.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.16",
+    "vue": "^3.5.29",
+    "vue-tsc": "^3.2.5"
   },
   "type": "module"
 }

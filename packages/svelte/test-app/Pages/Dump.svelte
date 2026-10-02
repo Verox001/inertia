@@ -1,31 +1,32 @@
-<script>
-  import { beforeUpdate } from 'svelte'
+<script lang="ts">
+  import type { Method } from '@inertiajs/core'
   import { page } from '@inertiajs/svelte'
+  import type { MulterFile } from '../types'
 
-  export let headers
-  export let method
-  export let form
-  export let files = {}
-  export let query
+  interface Props {
+    headers: Record<string, string>
+    method: Method
+    form: Record<string, unknown>
+    files: MulterFile[] | object
+    url: string
+    query: Record<string, unknown>
+  }
 
+  let { headers, method, form, files = {}, url, query }: Props = $props()
+
+  // svelte-ignore state_referenced_locally
   const dump = {
     headers,
     method,
     form,
     files,
     query,
-    $page: $page,
+    url,
+    page: page,
   }
 
-  beforeUpdate(() => {
-    window._inertia_request_dump = {
-      headers,
-      method,
-      form,
-      files,
-      query,
-      $page: $page,
-    }
+  $effect(() => {
+    window._inertia_request_dump = dump
   })
 </script>
 

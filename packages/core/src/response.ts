@@ -1,25 +1,51 @@
-import { AxiosResponse } from 'axios'
-import { fireErrorEvent, fireInvalidEvent, firePrefetchedEvent, fireSuccessEvent } from './events'
+import { isEqual } from 'es-toolkit'
+import { get, set } from 'es-toolkit/compat'
+import { router } from '.'
+import dialog from './dialog'
+import {
+  fireBeforeUpdateEvent,
+  fireErrorEvent,
+  fireFlashEvent,
+  fireHttpExceptionEvent,
+  fireLocationEvent,
+  firePrefetchedEvent,
+  fireSuccessEvent,
+} from './events'
 import { history } from './history'
-import modal from './modal'
+import { interceptors } from './interceptors'
+import { parsePage } from './json'
 import { page as currentPage } from './page'
+import { partialReloadRequestsProp } from './partialReload'
 import Queue from './queue'
 import { RequestParams } from './requestParams'
 import { SessionStorage } from './sessionStorage'
-import { ActiveVisit, ErrorBag, Errors, Page } from './types'
+import { ActiveVisit, ErrorBag, Errors, HttpResponse, Page, PageProps } from './types'
 import { hrefToUrl, isSameUrlWithoutHash, setHashIfSameUrl } from './url'
 
 const queue = new Queue<Promise<boolean | void>>()
 
 export class Response {
+  protected wasPrefetched = false
+  protected processed = false
+
   constructor(
     protected requestParams: RequestParams,
-    protected response: AxiosResponse,
+    protected response: HttpResponse,
     protected originatingPage: Page,
+    protected optimisticId: number | null = null,
   ) {}
 
-  public static create(params: RequestParams, response: AxiosResponse, originatingPage: Page): Response {
-    return new Response(params, response, originatingPage)
+  public static create(
+    params: RequestParams,
+    response: HttpResponse,
+    originatingPage: Page,
+    optimisticId: number | null = null,
+  ): Response {
+    return new Response(params, response, originatingPage, optimisticId)
+  }
+
+  public isProcessed(): boolean {
+    return this.processed
   }
 
   public async handlePrefetch() {
@@ -34,6 +60,7 @@ export class Response {
 
   public async process() {
     if (this.requestParams.all().prefetch) {
+      this.wasPrefetched = true
       this.requestParams.all().prefetch = false
 
       this.requestParams.all().onPrefetched(this.response, this.requestParams.all())
@@ -43,9 +70,25 @@ export class Response {
     }
 
     this.requestParams.runCallbacks()
+    this.processed = true
 
     if (!this.isInertiaResponse()) {
       return this.handleNonInertiaResponse()
+    }
+
+    if (this.isHttpException()) {
+      const response = {
+        ...this.response,
+        data: this.getDataFromResponse(this.response.data),
+      }
+
+      if (this.requestParams.all().onHttpException(response) === false) {
+        return
+      }
+
+      if (!fireHttpExceptionEvent(response)) {
+        return
+      }
     }
 
     await history.processQueue()
@@ -54,17 +97,32 @@ export class Response {
 
     await this.setPage()
 
+    const { flash } = currentPage.get()
+
+    if (Object.keys(flash).length > 0 && !this.requestParams.isDeferredPropsRequest()) {
+      fireFlashEvent(flash)
+      this.requestParams.all().onFlash(flash)
+    }
+
     const errors = currentPage.get().props.errors || {}
 
     if (Object.keys(errors).length > 0) {
       const scopedErrors = this.getScopedErrors(errors)
 
-      fireErrorEvent(scopedErrors)
+      fireErrorEvent(scopedErrors, { page: currentPage.get(), visitId: this.requestParams.all().id })
 
       return this.requestParams.all().onError(scopedErrors)
     }
 
-    fireSuccessEvent(currentPage.get())
+    router.flushByCacheTags(this.requestParams.all().invalidateCacheTags || [])
+
+    if (!this.wasPrefetched) {
+      // We end up here other than from the prefetch cache, so we assume this response is
+      // newer than the cached one and therefore flush the cache.
+      router.flush(currentPage.get().url)
+    }
+
+    fireSuccessEvent(currentPage.get(), { visitId: this.requestParams.all().id })
 
     await this.requestParams.all().onSuccess(currentPage.get())
 
@@ -75,7 +133,28 @@ export class Response {
     this.requestParams.merge(params)
   }
 
+  public getPageResponse(): Page {
+    const data = this.getDataFromResponse(this.response.data)
+
+    // Only spread if data is an object (not a string like HTML error pages)
+    if (typeof data === 'object') {
+      return (this.response.data = { ...data, flash: data.flash ?? {}, rescuedProps: data.rescuedProps ?? [] })
+    }
+
+    return (this.response.data = data)
+  }
+
   protected async handleNonInertiaResponse() {
+    if (this.isInertiaRedirect()) {
+      router.visit(this.getHeader('x-inertia-redirect'), {
+        ...this.requestParams.all(),
+        method: 'get',
+        data: {},
+      })
+
+      return
+    }
+
     if (this.isLocationVisit()) {
       const locationUrl = hrefToUrl(this.getHeader('x-inertia-location'))
 
@@ -89,13 +168,21 @@ export class Response {
       data: this.getDataFromResponse(this.response.data),
     }
 
-    if (fireInvalidEvent(response)) {
-      return modal.show(response.data)
+    if (this.requestParams.all().onHttpException(response) === false) {
+      return
+    }
+
+    if (fireHttpExceptionEvent(response)) {
+      return dialog.show(response.data)
     }
   }
 
   protected isInertiaResponse(): boolean {
     return this.hasHeader('x-inertia')
+  }
+
+  protected isHttpException(): boolean {
+    return this.response.status >= 400
   }
 
   protected hasStatus(status: number): boolean {
@@ -110,6 +197,10 @@ export class Response {
     return this.getHeader(header) !== undefined
   }
 
+  protected isInertiaRedirect(): boolean {
+    return this.hasStatus(409) && this.hasHeader('x-inertia-redirect')
+  }
+
   protected isLocationVisit(): boolean {
     return this.hasStatus(409) && this.hasHeader('x-inertia-location')
   }
@@ -119,13 +210,27 @@ export class Response {
    */
   protected locationVisit(url: URL): boolean | void {
     try {
-      SessionStorage.set(SessionStorage.locationVisitKey, {
-        preserveScroll: this.requestParams.all().preserveScroll === true,
-      })
-
       if (typeof window === 'undefined') {
         return
       }
+
+      const responseVersion = this.getHeader('x-inertia-version')
+      const versionChange = !!responseVersion && responseVersion !== currentPage.get().version
+
+      if (!fireLocationEvent(url, versionChange)) {
+        return
+      }
+
+      // A version change on a background request only needs to pick up new assets, so we don't
+      // force a full-page navigation the user never initiated. The next user-initiated visit
+      // hits the same location response and reloads then.
+      if (versionChange && this.requestParams.all().async) {
+        return
+      }
+
+      SessionStorage.set(SessionStorage.locationVisitKey, {
+        preserveScroll: this.requestParams.all().preserveScroll === true,
+      })
 
       if (isSameUrlWithoutHash(window.location, url)) {
         window.location.reload()
@@ -138,23 +243,35 @@ export class Response {
   }
 
   protected async setPage(): Promise<void> {
-    const pageResponse = this.getDataFromResponse(this.response.data)
+    const pageResponse = this.getPageResponse()
 
     if (!this.shouldSetPage(pageResponse)) {
       return Promise.resolve()
     }
 
+    this.response = await interceptors.processResponse(this.requestParams.all(), this.response)
+
     this.mergeProps(pageResponse)
+    currentPage.mergeOncePropsIntoResponse(pageResponse)
+    this.preserveOptimisticProps(pageResponse)
+    this.preserveEqualProps(pageResponse)
+
     await this.setRememberedState(pageResponse)
 
     this.requestParams.setPreserveOptions(pageResponse)
 
     pageResponse.url = history.preserveUrl ? currentPage.get().url : this.pageUrl(pageResponse)
 
+    this.requestParams.all().onBeforeUpdate(pageResponse)
+    fireBeforeUpdateEvent(pageResponse)
+
     return currentPage.set(pageResponse, {
       replace: this.requestParams.all().replace,
-      preserveScroll: this.requestParams.all().preserveScroll,
-      preserveState: this.requestParams.all().preserveState,
+      preserveScroll: this.requestParams.all().preserveScroll as boolean,
+      preserveState: this.requestParams.all().preserveState as boolean,
+      viewTransition: this.requestParams.all().viewTransition,
+      cached: this.requestParams.all().cached,
+      visitId: this.requestParams.all().id,
     })
   }
 
@@ -164,7 +281,7 @@ export class Response {
     }
 
     try {
-      return JSON.parse(response)
+      return parsePage(response)
     } catch (error) {
       return response
     }
@@ -199,30 +316,312 @@ export class Response {
   protected pageUrl(pageResponse: Page) {
     const responseUrl = hrefToUrl(pageResponse.url)
 
-    setHashIfSameUrl(this.requestParams.all().url, responseUrl)
+    if (pageResponse.preserveFragment) {
+      responseUrl.hash = this.requestParams.all().url.hash
+    } else {
+      setHashIfSameUrl(this.requestParams.all().url, responseUrl)
+    }
 
     return responseUrl.pathname + responseUrl.search + responseUrl.hash
   }
 
-  protected mergeProps(pageResponse: Page): void {
-    if (this.requestParams.isPartial() && pageResponse.component === currentPage.get().component) {
-      const propsToMerge = pageResponse.mergeProps || []
-
-      propsToMerge.forEach((prop) => {
-        const incomingProp = pageResponse.props[prop]
-
-        if (Array.isArray(incomingProp)) {
-          pageResponse.props[prop] = [...((currentPage.get().props[prop] || []) as any[]), ...incomingProp]
-        } else if (typeof incomingProp === 'object') {
-          pageResponse.props[prop] = {
-            ...((currentPage.get().props[prop] || []) as Record<string, any>),
-            ...incomingProp,
-          }
-        }
-      })
-
-      pageResponse.props = { ...currentPage.get().props, ...pageResponse.props }
+  protected preserveOptimisticProps(pageResponse: Page): void {
+    if (!router.hasPendingOptimistic() && !this.isStaleOptimisticResponse()) {
+      return
     }
+
+    for (const key of Object.keys(pageResponse.props)) {
+      if (currentPage.hasBaseline(key)) {
+        currentPage.updateBaseline(key, pageResponse.props[key])
+        pageResponse.props[key] = currentPage.get().props[key]
+      }
+    }
+  }
+
+  protected isStaleOptimisticResponse(): boolean {
+    // An optimistic request that started later has already been confirmed, so these
+    // props were read before that write and would roll it back on screen
+    return this.optimisticId !== null && currentPage.hasConfirmedOptimisticAfter(this.optimisticId)
+  }
+
+  protected preserveEqualProps(pageResponse: Page): void {
+    if (pageResponse.component !== currentPage.get().component) {
+      return
+    }
+
+    const currentPageProps = currentPage.get().props
+
+    Object.entries(pageResponse.props).forEach(([key, value]) => {
+      if (isEqual(value, currentPageProps[key])) {
+        pageResponse.props[key] = currentPageProps[key]
+      }
+    })
+  }
+
+  protected mergeProps(pageResponse: Page): void {
+    if (!this.requestParams.isPartial() || pageResponse.component !== currentPage.get().component) {
+      return
+    }
+
+    const propsToAppend = pageResponse.mergeProps || []
+    const propsToPrepend = pageResponse.prependProps || []
+    const propsToDeepMerge = pageResponse.deepMergeProps || []
+    const matchPropsOn = pageResponse.matchPropsOn || []
+
+    const mergeProp = (prop: string, shouldAppend: boolean) => {
+      const currentProp = get(currentPage.get().props, prop)
+      const incomingProp = get(pageResponse.props, prop)
+
+      if (Array.isArray(incomingProp)) {
+        const newArray = this.mergeOrMatchItems(
+          (currentProp || []) as any[],
+          incomingProp,
+          prop,
+          matchPropsOn,
+          shouldAppend,
+        )
+
+        set(pageResponse.props, prop, newArray)
+      } else if (typeof incomingProp === 'object' && incomingProp !== null) {
+        const newObject = {
+          ...(currentProp || {}),
+          ...incomingProp,
+        }
+
+        set(pageResponse.props, prop, newObject)
+      }
+    }
+
+    propsToAppend.forEach((prop) => mergeProp(prop, true))
+    propsToPrepend.forEach((prop) => mergeProp(prop, false))
+
+    propsToDeepMerge.forEach((prop) => {
+      const currentProp = get(currentPage.get().props, prop)
+      const incomingProp = get(pageResponse.props, prop)
+
+      // Function to recursively merge objects and arrays
+      const deepMerge = (target: any, source: any, matchProp: string) => {
+        if (Array.isArray(source)) {
+          return this.mergeOrMatchItems(target, source, matchProp, matchPropsOn)
+        }
+
+        if (typeof source === 'object' && source !== null) {
+          // Merge objects by iterating over keys
+          return Object.keys(source).reduce(
+            (acc, key) => {
+              acc[key] = deepMerge(target ? target[key] : undefined, source[key], `${matchProp}.${key}`)
+              return acc
+            },
+            { ...target },
+          )
+        }
+
+        // If the source is neither an array nor an object, simply return it
+        return source
+      }
+
+      // Apply the deep merge and update the page response
+      set(pageResponse.props, prop, deepMerge(currentProp, incomingProp, prop))
+    })
+
+    const nestedTopKeys = new Set(
+      [...this.requestParams.all().only, ...this.requestParams.all().except]
+        .filter((prop) => prop.includes('.'))
+        .map((prop) => prop.split('.')[0]),
+    )
+    for (const key of nestedTopKeys) {
+      const currentValue = currentPage.get().props[key]
+
+      if (this.isObject(currentValue) && this.isObject(pageResponse.props[key])) {
+        pageResponse.props[key] = this.deepMergeObjects(currentValue as PageProps, pageResponse.props[key] as PageProps)
+      }
+    }
+
+    pageResponse.props = { ...currentPage.get().props, ...pageResponse.props }
+
+    if (this.shouldPreserveErrors(pageResponse)) {
+      pageResponse.props.errors = currentPage.get().props.errors
+    }
+
+    // Preserve the existing scrollProps
+    if (currentPage.get().scrollProps) {
+      pageResponse.scrollProps = {
+        ...(currentPage.get().scrollProps || {}),
+        ...(pageResponse.scrollProps || {}),
+      }
+    }
+
+    // Preserve the existing onceProps
+    if (currentPage.hasOnceProps()) {
+      pageResponse.onceProps = {
+        ...(currentPage.get().onceProps || {}),
+        ...(pageResponse.onceProps || {}),
+      }
+    }
+
+    // Preserve flash data on deferred props requests (background fetches that replay
+    // the same flash from the initial load), but let regular partial reloads use
+    // whatever the server sent (which may be empty, clearing stale flash)
+    if (this.requestParams.isDeferredPropsRequest()) {
+      pageResponse.flash = { ...currentPage.get().flash }
+    }
+
+    const currentOriginalDeferred = currentPage.get().initialDeferredProps
+    if (currentOriginalDeferred && Object.keys(currentOriginalDeferred).length > 0) {
+      pageResponse.initialDeferredProps = currentOriginalDeferred
+    }
+
+    pageResponse.rescuedProps = this.mergeRescuedProps(pageResponse)
+  }
+
+  protected mergeRescuedProps(pageResponse: Page): string[] {
+    const currentRescued = currentPage.get().rescuedProps ?? []
+    const incomingRescued = pageResponse.rescuedProps ?? []
+
+    const newRescued = new Set(
+      currentRescued.filter((prop) => !partialReloadRequestsProp(this.requestParams.all(), prop)),
+    )
+
+    incomingRescued.forEach((prop) => newRescued.add(prop))
+
+    return Array.from(newRescued)
+  }
+
+  /**
+   * By default, the Laravel adapter shares validation errors via Inertia::always(),
+   * so responses always include errors, even when empty. Components like
+   * InfiniteScroll and WhenVisible, as well as loading deferred props,
+   * perform async requests that should practically never reset errors.
+   */
+  protected shouldPreserveErrors(pageResponse: Page): boolean {
+    if (!this.requestParams.all().preserveErrors) {
+      return false
+    }
+
+    const currentErrors = currentPage.get().props.errors
+
+    if (!currentErrors || Object.keys(currentErrors).length === 0) {
+      return false
+    }
+
+    const responseErrors = pageResponse.props.errors
+
+    if (responseErrors && Object.keys(responseErrors).length > 0) {
+      return false
+    }
+
+    return true
+  }
+
+  protected isObject(item: any): boolean {
+    return item && typeof item === 'object' && !Array.isArray(item)
+  }
+
+  protected deepMergeObjects(target: PageProps, source: PageProps): PageProps {
+    const result = { ...target }
+
+    for (const key of Object.keys(source)) {
+      const targetValue = target[key]
+      const sourceValue = source[key]
+
+      if (this.isObject(targetValue) && this.isObject(sourceValue)) {
+        result[key] = this.deepMergeObjects(targetValue as PageProps, sourceValue as PageProps)
+      } else {
+        result[key] = sourceValue
+      }
+    }
+
+    return result
+  }
+
+  protected mergeOrMatchItems(
+    existingItems: any[],
+    newItems: any[],
+    matchProp: string,
+    matchPropsOn: string[],
+    shouldAppend = true,
+  ) {
+    const items = Array.isArray(existingItems) ? existingItems : []
+
+    // Find the matching key for this specific property path
+    const matchingKey = matchPropsOn.find((key) => {
+      const keyPath = key.split('.').slice(0, -1).join('.')
+
+      return keyPath === matchProp
+    })
+
+    // If no matching key is configured, simply concatenate the arrays
+    if (!matchingKey) {
+      return shouldAppend ? [...items, ...newItems] : [...newItems, ...items]
+    }
+
+    // Extract the property name we'll use to match items (e.g., 'id' from 'users.data.id')
+    const uniqueProperty = matchingKey.split('.').pop() || ''
+
+    // Create a map of new items by their unique property lookups
+    const newItemsMap = new Map()
+
+    newItems.forEach((item) => {
+      if (this.hasUniqueProperty(item, uniqueProperty)) {
+        newItemsMap.set(item[uniqueProperty], item)
+      }
+    })
+
+    return shouldAppend
+      ? this.appendWithMatching(items, newItems, newItemsMap, uniqueProperty)
+      : this.prependWithMatching(items, newItems, newItemsMap, uniqueProperty)
+  }
+
+  protected appendWithMatching(
+    existingItems: any[],
+    newItems: any[],
+    newItemsMap: Map<any, any>,
+    uniqueProperty: string,
+  ): any[] {
+    // Update existing items with new values, keep non-matching items
+    const updatedExisting = existingItems.map((item) => {
+      if (this.hasUniqueProperty(item, uniqueProperty) && newItemsMap.has(item[uniqueProperty])) {
+        return newItemsMap.get(item[uniqueProperty])
+      }
+
+      return item
+    })
+
+    // Filter new items to only include those not already in existing items
+    const newItemsToAdd = newItems.filter((item) => {
+      if (!this.hasUniqueProperty(item, uniqueProperty)) {
+        return true // Always add items without unique property
+      }
+
+      return !existingItems.some(
+        (existing) =>
+          this.hasUniqueProperty(existing, uniqueProperty) && existing[uniqueProperty] === item[uniqueProperty],
+      )
+    })
+
+    return [...updatedExisting, ...newItemsToAdd]
+  }
+
+  protected prependWithMatching(
+    existingItems: any[],
+    newItems: any[],
+    newItemsMap: Map<any, any>,
+    uniqueProperty: string,
+  ): any[] {
+    // Filter existing items, keeping only those not being updated
+    const untouchedExisting = existingItems.filter((item) => {
+      if (this.hasUniqueProperty(item, uniqueProperty)) {
+        return !newItemsMap.has(item[uniqueProperty])
+      }
+
+      return true
+    })
+
+    return [...newItems, ...untouchedExisting]
+  }
+
+  protected hasUniqueProperty(item: any, property: string): boolean {
+    return item && typeof item === 'object' && property in item
   }
 
   protected async setRememberedState(pageResponse: Page): Promise<void> {

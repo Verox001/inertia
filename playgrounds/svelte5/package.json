@@ -9,18 +9,17 @@
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch"
   },
   "devDependencies": {
-    "@inertiajs/svelte": "2.0.3",
-    "@sveltejs/vite-plugin-svelte": "^4.0.0-next.6",
-    "@tsconfig/svelte": "^5.0.4",
-    "autoprefixer": "^10.4.13",
-    "axios": "^1.6.0",
-    "laravel-vite-plugin": "^1.0.5",
-    "lodash": "^4.17.19",
-    "postcss": "^8.4.31",
-    "svelte": "^5.0.0-next.244",
-    "svelte-check": "^4.0.0",
-    "tailwindcss": "^3.2.4",
-    "typescript": "^5.6.2",
-    "vite": "^5.4.8"
+    "@inertiajs/core": "workspace:*",
+    "@inertiajs/svelte": "workspace:*",
+    "@inertiajs/vite": "workspace:*",
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@tailwindcss/vite": "^4.2.2",
+    "@tsconfig/svelte": "^5.0.8",
+    "laravel-vite-plugin": "^3.0.0",
+    "svelte": "^5.56.4",
+    "svelte-check": "^4.4.3",
+    "tailwindcss": "^4.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.16"
   }
 }

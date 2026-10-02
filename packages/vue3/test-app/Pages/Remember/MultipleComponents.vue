@@ -1,8 +1,8 @@
-<script setup>
-import ComponentA from '@/Pages/Remember/Components/ComponentA.vue'
-import ComponentB from '@/Pages/Remember/Components/ComponentB.vue'
+<script setup lang="ts">
 import { Link, useRemember } from '@inertiajs/vue3'
 import { ref } from 'vue'
+import ComponentA from '@/Pages/Remember/Components/ComponentA.vue'
+import ComponentB from '@/Pages/Remember/Components/ComponentB.vue'
 
 const untracked = ref('')
 

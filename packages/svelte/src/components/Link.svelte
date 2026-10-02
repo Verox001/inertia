@@ -1,46 +1,110 @@
 <script lang="ts">
-  import type {
-    CacheForOption,
-    FormDataConvertible,
-    LinkPrefetchOption,
-    Method,
-    PreserveStateOption,
-  } from '@inertiajs/core'
+  import { isUrlMethodPair, resolveUrlMethodPairComponent } from '@inertiajs/core'
+  import type { LinkComponentBaseProps } from '@inertiajs/core'
   import { inertia } from '../index'
 
-  export let href: string
-  export let as: keyof HTMLElementTagNameMap = 'a'
-  export let data: Record<string, FormDataConvertible> = {}
-  export let method: Method = 'get'
-  export let replace: boolean = false
-  export let preserveScroll: PreserveStateOption = false
-  export let preserveState: PreserveStateOption | null = null
-  export let only: string[] = []
-  export let except: string[] = []
-  export let headers: Record<string, string> = {}
-  export let queryStringArrayFormat: 'brackets' | 'indices' = 'brackets'
-  export let async: boolean = false
-  export let prefetch: boolean | LinkPrefetchOption | LinkPrefetchOption[] = false
-  export let cacheFor: CacheForOption | CacheForOption[] = 0
+  interface Props {
+    href?: LinkComponentBaseProps['href']
+    as?: keyof HTMLElementTagNameMap
+    data?: LinkComponentBaseProps['data']
+    method?: LinkComponentBaseProps['method']
+    replace?: LinkComponentBaseProps['replace']
+    preserveScroll?: LinkComponentBaseProps['preserveScroll']
+    preserveState?: LinkComponentBaseProps['preserveState'] | null
+    preserveUrl?: LinkComponentBaseProps['preserveUrl']
+    only?: LinkComponentBaseProps['only']
+    except?: LinkComponentBaseProps['except']
+    headers?: LinkComponentBaseProps['headers']
+    queryStringArrayFormat?: LinkComponentBaseProps['queryStringArrayFormat']
+    async?: LinkComponentBaseProps['async']
+    prefetch?: LinkComponentBaseProps['prefetch']
+    cacheFor?: LinkComponentBaseProps['cacheFor']
+    cacheTags?: LinkComponentBaseProps['cacheTags']
+    viewTransition?: LinkComponentBaseProps['viewTransition']
+    component?: LinkComponentBaseProps['component']
+    instant?: LinkComponentBaseProps['instant']
+    pageProps?: LinkComponentBaseProps['pageProps']
+    children?: import('svelte').Snippet
+    [key: string]: any
+  }
 
-  $: asProp = method !== 'get' ? 'button' : as.toLowerCase()
-  $: elProps =
+  // Are these defined anywhere else?
+  type Callbacks = {
+    onfocus?: () => void
+    onblur?: () => void
+    onclick?: () => void
+    ondblclick?: () => void
+    onmousedown?: () => void
+    onmousemove?: () => void
+    onmouseout?: () => void
+    onmouseover?: () => void
+    onmouseup?: () => void
+    'oncancel-token'?: () => void
+    onbefore?: () => void
+    onstart?: () => void
+    onprogress?: () => void
+    onfinish?: () => void
+    oncancel?: () => void
+    onsuccess?: () => void
+    onerror?: () => void
+    onhttpException?: () => void
+    onnetworkError?: () => void
+    onflash?: () => void
+    onprefetching?: () => void
+    onprefetched?: () => void
+  }
+
+  let {
+    href = '',
+    as = 'a',
+    data = {},
+    method = 'get',
+    replace = false,
+    preserveScroll = false,
+    preserveState = null,
+    preserveUrl = false,
+    only = [],
+    except = [],
+    headers = {},
+    queryStringArrayFormat = 'brackets',
+    async = false,
+    prefetch = false,
+    cacheFor = 0,
+    cacheTags = [],
+    viewTransition = false,
+    component = undefined,
+    instant = false,
+    pageProps = null,
+    children,
+    ...rest
+  }: Props & Callbacks = $props()
+
+  let _method = $derived(isUrlMethodPair(href) ? href.method : method)
+  let _href = $derived(isUrlMethodPair(href) ? href.url : href)
+  let resolvedComponent = $derived(
+    component ? component : instant && isUrlMethodPair(href) ? resolveUrlMethodPairComponent(href) : null,
+  )
+
+  let asProp = $derived(_method !== 'get' ? 'button' : as.toLowerCase())
+  let elProps = $derived(
     {
-      a: { href },
+      a: { href: _href },
       button: { type: 'button' },
-    }[asProp] || {}
+    }[asProp] || {},
+  )
 </script>
 
-<!-- svelte-ignore a11y-no-static-element-interactions -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <svelte:element
   this={asProp}
   use:inertia={{
-    ...(as !== 'a' ? { href } : {}),
+    ...(asProp !== 'a' ? { href: _href } : {}),
     data,
-    method,
+    method: _method,
     replace,
     preserveScroll,
-    preserveState: preserveState ?? method !== 'get',
+    preserveState: preserveState ?? _method !== 'get',
+    preserveUrl,
     only,
     except,
     headers,
@@ -48,26 +112,13 @@
     async,
     prefetch,
     cacheFor,
+    cacheTags,
+    viewTransition,
+    component: resolvedComponent,
+    pageProps,
   }}
-  {...$$restProps}
+  {...rest}
   {...elProps}
-  on:focus
-  on:blur
-  on:click
-  on:dblclick
-  on:mousedown
-  on:mousemove
-  on:mouseout
-  on:mouseover
-  on:mouseup
-  on:cancel-token
-  on:before
-  on:start
-  on:progress
-  on:finish
-  on:cancel
-  on:success
-  on:error
 >
-  <slot />
+  {@render children?.()}
 </svelte:element>

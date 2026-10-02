@@ -1,8 +1,3 @@
-<script lang="ts">
-import Layout from '../Components/Layout.vue'
-export default { layout: Layout }
-</script>
-
 <script setup lang="ts">
 import { Head, usePrefetch } from '@inertiajs/vue3'
 
@@ -22,7 +17,7 @@ defineProps({ users: Array, date: String })
     <span v-if="isPrefetching" class="text-red-500"> refreshing...</span>
   </div>
 
-  <div class="w-full max-w-2xl mt-6 overflow-hidden border rounded shadow-sm">
+  <div class="mt-6 w-full max-w-2xl overflow-hidden rounded-sm border border-gray-200 shadow-xs">
     <table class="w-full text-left">
       <thead>
         <tr>
@@ -32,7 +27,7 @@ defineProps({ users: Array, date: String })
         </tr>
       </thead>
       <tbody>
-        <tr v-for="user in users" :key="user.id" class="border-t">
+        <tr v-for="user in users" :key="user.id" class="border-t border-gray-200">
           <td class="px-4 py-2">{{ user.id }}</td>
           <td class="px-4 py-2">{{ user.name }}</td>
           <td class="px-4 py-2">{{ user.email }}</td>

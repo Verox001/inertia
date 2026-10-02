@@ -1,13 +1,10 @@
-<script>
+<script setup lang="ts">
+import { Link } from '@inertiajs/vue3'
 import Layout from '@/Layouts/SiteLayout.vue'
 
-export default {
+defineOptions({
   layout: Layout,
-}
-</script>
-
-<script setup>
-import { Link } from '@inertiajs/vue3'
+})
 </script>
 
 <template>

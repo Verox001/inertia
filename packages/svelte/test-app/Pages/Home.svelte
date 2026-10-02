@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { inertia, page, router } from '@inertiajs/svelte'
   import { onMount } from 'svelte'
 
@@ -18,9 +18,17 @@
     router.post('/redirect-external')
   }
 
+  const redirectHash = () => {
+    router.get('/redirect-hash')
+  }
+
+  const redirectHashPost = () => {
+    router.post('/redirect-hash')
+  }
+
   onMount(() => {
     window._inertia_page_key = crypto.randomUUID()
-    window._inertia_props = $page.props
+    window._inertia_props = page.props
     window._plugin_global_props = {}
   })
 </script>
@@ -31,14 +39,20 @@
   <a href="/links/method" use:inertia class="links-method">Basic Links</a>
   <a href="/links/replace" use:inertia class="links-replace">'Replace' Links</a>
 
-  <a href="#" on:click={visitsMethod} class="visits-method">Manual basic visits</a>
-  <a href="#" on:click={visitsReplace} class="visits-replace">Manual 'Replace' visits</a>
+  <a href={'#'} onclick={visitsMethod} class="visits-method">Manual basic visits</a>
+  <a href={'#'} onclick={visitsReplace} class="visits-replace">Manual 'Replace' visits</a>
 
   <button use:inertia={{ href: '/redirect', method: 'post' }} class="links-redirect">Internal Redirect Link</button>
-  <a href="#" on:click={redirect} class="visits-redirect">Manual Redirect visit</a>
+  <a href={'#'} onclick={redirect} class="visits-redirect">Manual Redirect visit</a>
 
   <button use:inertia={{ href: '/redirect-external', method: 'post' }} class="links-redirect-external"
     >External Redirect Link</button
   >
-  <a href="#" on:click={redirectExternal} class="visits-redirect-external">Manual External Redirect visit</a>
+  <a href={'#'} onclick={redirectExternal} class="visits-redirect-external">Manual External Redirect visit</a>
+
+  <a href={'#'} onclick={redirectHash} class="visits-redirect-hash">Manual Hash Redirect visit</a>
+  <a href={'#'} onclick={redirectHashPost} class="visits-redirect-hash-post">Manual Hash Redirect POST visit</a>
+
+  <a href="/links/as-element" use:inertia class="link-targets-self" target="_self">Target _self</a>
+  <a href="/links/as-element" use:inertia class="link-targets-blank" target="_blank">Target _blank</a>
 </div>

@@ -1,20 +1,25 @@
-<script context="module">
+<script module lang="ts">
   export { default as layout } from '@/Layouts/WithoutScrollRegion.svelte'
 </script>
 
-<script>
-  import { onMount } from 'svelte'
+<script lang="ts">
+  import type { Page } from '@inertiajs/core'
   import { inertia } from '@inertiajs/svelte'
+  import { onMount } from 'svelte'
 
-  export let foo = 'default'
+  interface Props {
+    foo?: string
+  }
 
-  const preserveCallback = (page) => {
+  let { foo = 'default' }: Props = $props()
+
+  const preserveCallback = (page: Page) => {
     alert(page)
 
     return true
   }
 
-  const preserveCallbackFalse = (page) => {
+  const preserveCallbackFalse = (page: Page) => {
     alert(page)
 
     return false

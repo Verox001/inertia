@@ -1,121 +1,242 @@
-import { Page, PageProps, PageResolver, router, setupProgress } from '@inertiajs/core'
-import { ComponentType, FunctionComponent, Key, ReactElement, ReactNode, createElement } from 'react'
+/// <reference path="./env.d.ts" />
+import {
+  buildSSRBody,
+  CreateInertiaAppOptions,
+  CreateInertiaAppOptionsForCSR,
+  CreateInertiaAppOptionsForSSR,
+  exposeInterceptors,
+  getInitialPageFromDOM,
+  http as httpModule,
+  InertiaAppSSRResponse,
+  Page,
+  PageProps,
+  router,
+  setupProgress,
+  SharedPageProps,
+} from '@inertiajs/core'
+import { createElement, ReactElement, StrictMode } from 'react'
+import { createRoot, hydrateRoot } from 'react-dom/client'
 import { renderToString } from 'react-dom/server'
-import App from './App'
-
-type ReactInstance = ReactElement
-type ReactComponent = ReactNode
-
-type HeadManagerOnUpdate = (elements: string[]) => void // TODO: When shipped, replace with: Inertia.HeadManagerOnUpdate
-type HeadManagerTitleCallback = (title: string) => string // TODO: When shipped, replace with: Inertia.HeadManagerTitleCallback
-
-type AppType<SharedProps extends PageProps = PageProps> = FunctionComponent<
-  {
-    children?: (props: { Component: ComponentType; key: Key; props: Page<SharedProps>['props'] }) => ReactNode
-  } & SetupOptions<unknown, SharedProps>['props']
->
+import App, { InertiaAppProps, type InertiaApp } from './App'
+import { config } from './index'
+import { ReactComponent, ReactInertiaAppConfig } from './types'
 
 export type SetupOptions<ElementType, SharedProps extends PageProps> = {
   el: ElementType
-  App: AppType
-  props: {
-    initialPage: Page<SharedProps>
-    initialComponent: ReactComponent
-    resolveComponent: PageResolver
-    titleCallback?: HeadManagerTitleCallback
-    onHeadUpdate?: HeadManagerOnUpdate
-  }
+  App: InertiaApp
+  props: InertiaAppProps<SharedProps>
 }
 
-type BaseInertiaAppOptions = {
-  title?: HeadManagerTitleCallback
-  resolve: PageResolver
+type ComponentResolver = (
+  name: string,
+  page?: Page<SharedPageProps>,
+) => ReactComponent | Promise<ReactComponent> | { default: ReactComponent }
+
+type ReactWithApp<SharedProps extends PageProps> = (
+  app: ReactElement,
+  options: { ssr: boolean; page: Page<SharedProps> },
+) => ReactElement
+
+type InertiaAppOptionsForCSR<SharedProps extends PageProps> = CreateInertiaAppOptionsForCSR<
+  SharedProps,
+  ComponentResolver,
+  SetupOptions<HTMLElement, SharedProps>,
+  void,
+  ReactInertiaAppConfig
+> & {
+  strictMode?: undefined
+  withApp?: never
 }
 
-type CreateInertiaAppSetupReturnType = ReactInstance | void
-type InertiaAppOptionsForCSR<SharedProps extends PageProps> = BaseInertiaAppOptions & {
-  id?: string
-  page?: Page | string
-  render?: undefined
-  progress?:
-    | false
-    | {
-        delay?: number
-        color?: string
-        includeCSS?: boolean
-        showSpinner?: boolean
-      }
-  setup(options: SetupOptions<HTMLElement, SharedProps>): CreateInertiaAppSetupReturnType
-}
-
-type CreateInertiaAppSSRContent = { head: string[]; body: string }
-type InertiaAppOptionsForSSR<SharedProps extends PageProps> = BaseInertiaAppOptions & {
-  id?: undefined
-  page: Page | string
+type InertiaAppOptionsForSSR<SharedProps extends PageProps> = CreateInertiaAppOptionsForSSR<
+  SharedProps,
+  ComponentResolver,
+  SetupOptions<null, SharedProps>,
+  ReactElement,
+  ReactInertiaAppConfig
+> & {
   render: typeof renderToString
-  progress?: undefined
-  setup(options: SetupOptions<null, SharedProps>): ReactInstance
+  strictMode?: undefined
+  withApp?: never
 }
 
-export default async function createInertiaApp<SharedProps extends PageProps = PageProps>(
+type InertiaAppOptionsAuto<SharedProps extends PageProps> = Omit<
+  CreateInertiaAppOptions<
+    ComponentResolver,
+    SetupOptions<HTMLElement | null, SharedProps>,
+    ReactElement | void,
+    ReactInertiaAppConfig
+  >,
+  'setup'
+> & {
+  page?: Page<SharedProps>
+  render?: undefined
+  strictMode?: boolean
+} & (
+    | { setup?: undefined; withApp?: ReactWithApp<SharedProps> }
+    | { setup: (options: SetupOptions<HTMLElement | null, SharedProps>) => ReactElement | void; withApp?: never }
+  )
+
+type RenderToString = (element: ReactElement) => string
+
+type RenderFunction<SharedProps extends PageProps> = (
+  page: Page<SharedProps>,
+  renderToString: RenderToString,
+) => Promise<InertiaAppSSRResponse>
+
+export default async function createInertiaApp<SharedProps extends PageProps = PageProps & SharedPageProps>(
   options: InertiaAppOptionsForCSR<SharedProps>,
-): Promise<CreateInertiaAppSetupReturnType>
-export default async function createInertiaApp<SharedProps extends PageProps = PageProps>(
+): Promise<void>
+export default async function createInertiaApp<SharedProps extends PageProps = PageProps & SharedPageProps>(
   options: InertiaAppOptionsForSSR<SharedProps>,
-): Promise<CreateInertiaAppSSRContent>
-export default async function createInertiaApp<SharedProps extends PageProps = PageProps>({
-  id = 'app',
-  resolve,
-  setup,
-  title,
-  progress = {},
-  page,
-  render,
-}: InertiaAppOptionsForCSR<SharedProps> | InertiaAppOptionsForSSR<SharedProps>): Promise<
-  CreateInertiaAppSetupReturnType | CreateInertiaAppSSRContent
-> {
+): Promise<InertiaAppSSRResponse>
+export default async function createInertiaApp<SharedProps extends PageProps = PageProps & SharedPageProps>(
+  options?: InertiaAppOptionsAuto<SharedProps>,
+): Promise<void | RenderFunction<SharedProps>>
+export default async function createInertiaApp<SharedProps extends PageProps = PageProps & SharedPageProps>(
+  {
+    id = 'app',
+    resolve,
+    setup,
+    title,
+    progress = {},
+    page,
+    render,
+    defaults = {},
+    nonce,
+    http,
+    layout,
+    serverHead,
+    strictMode = false,
+    withApp,
+    dev = !!import.meta.env?.DEV,
+  }:
+    | InertiaAppOptionsForCSR<SharedProps>
+    | InertiaAppOptionsForSSR<SharedProps>
+    | InertiaAppOptionsAuto<SharedProps> = {} as InertiaAppOptionsAuto<SharedProps>,
+): Promise<InertiaAppSSRResponse | RenderFunction<SharedProps> | void> {
+  config.replace(defaults)
+
+  if (nonce) {
+    config.set('nonce', nonce)
+  }
+
+  if (http) {
+    httpModule.setClient(http)
+  }
+
+  if (dev) {
+    exposeInterceptors()
+  }
+
   const isServer = typeof window === 'undefined'
-  const el = isServer ? null : document.getElementById(id)
-  const initialPage = page || JSON.parse(el.dataset.page)
-  // @ts-expect-error
-  const resolveComponent = (name) => Promise.resolve(resolve(name)).then((module) => module.default || module)
 
-  let head = []
+  const wrapWithStrictMode = (element: ReactElement): ReactElement => {
+    return strictMode ? createElement(StrictMode, null, element) : element
+  }
 
-  const reactApp = await Promise.all([
-    resolveComponent(initialPage.component),
-    router.decryptHistory().catch(() => {}),
-  ]).then(([initialComponent]) => {
-    return setup({
-      // @ts-expect-error
-      el,
-      App,
-      props: {
-        initialPage,
+  const resolveComponent = (name: string, page?: Page) =>
+    Promise.resolve(resolve!(name, page)).then((module) => {
+      return ((module as { default?: ReactComponent }).default || module) as ReactComponent
+    })
+
+  // SSR render function factory - when on server without page/render, return a render function
+  // This is used by the Vite plugin's SSR transform
+  if (isServer && !page && !render) {
+    return async (page: Page<SharedProps>, renderToString: RenderToString) => {
+      let head: string[] = []
+
+      const initialComponent = await resolveComponent(page.component, page)
+
+      const props: InertiaAppProps<SharedProps> = {
+        initialPage: page,
         initialComponent,
         resolveComponent,
         titleCallback: title,
-        onHeadUpdate: isServer ? (elements) => (head = elements) : null,
-      },
-    })
+        onHeadUpdate: (elements: string[]) => (head = elements),
+        defaultLayout: layout,
+        serverHead,
+      }
+
+      let reactApp: ReactElement
+
+      if (setup) {
+        reactApp = (setup as (options: SetupOptions<null, SharedProps>) => ReactElement)({
+          el: null,
+          App,
+          props,
+        })
+      } else {
+        reactApp = wrapWithStrictMode(createElement(App, props))
+
+        if (withApp) {
+          reactApp = withApp(reactApp, { ssr: true, page })
+        }
+      }
+
+      const html = renderToString(reactApp)
+      const body = buildSSRBody(id, page, html)
+
+      return { head, body }
+    }
+  }
+
+  const initialPage = page || getInitialPageFromDOM<Page<SharedProps>>(id)!
+
+  let head: string[] = []
+
+  const reactApp = await Promise.all([
+    resolveComponent(initialPage.component, initialPage),
+    router.decryptHistory().catch(() => {}),
+  ]).then(([initialComponent]) => {
+    const props: InertiaAppProps<SharedProps> = {
+      initialPage,
+      initialComponent,
+      resolveComponent,
+      titleCallback: title,
+      onHeadUpdate: isServer ? (elements: string[]) => (head = elements) : undefined,
+      defaultLayout: layout,
+      serverHead,
+    }
+
+    if (isServer) {
+      return (setup as (options: SetupOptions<null, SharedProps>) => ReactElement)({
+        el: null,
+        App,
+        props,
+      })
+    }
+
+    const el = document.getElementById(id)!
+
+    if (setup) {
+      return (setup as (options: SetupOptions<HTMLElement, SharedProps>) => void)({
+        el,
+        App,
+        props,
+      })
+    }
+
+    let appElement = wrapWithStrictMode(createElement(App, props))
+
+    if (withApp) {
+      appElement = withApp(appElement, { ssr: false, page: initialPage })
+    }
+
+    if (el.hasAttribute('data-server-rendered')) {
+      hydrateRoot(el, appElement)
+    } else {
+      createRoot(el).render(appElement)
+    }
   })
 
   if (!isServer && progress) {
     setupProgress(progress)
   }
 
-  if (isServer) {
-    const body = await render(
-      createElement(
-        'div',
-        {
-          id,
-          'data-page': JSON.stringify(initialPage),
-        },
-        // @ts-expect-error
-        reactApp,
-      ),
-    )
+  if (isServer && render && reactApp) {
+    const html = render(reactApp)
+    const body = buildSSRBody(id, initialPage, html)
 
     return { head, body }
   }

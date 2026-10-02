@@ -1,254 +1,266 @@
-import { FormDataConvertible, Method, Progress, router, VisitOptions } from '@inertiajs/core'
-import cloneDeep from 'lodash.clonedeep'
-import isEqual from 'lodash.isequal'
-import { reactive, watch } from 'vue'
+import {
+  CancelToken,
+  ErrorValue,
+  FormDataErrors,
+  FormDataKeys,
+  FormDataType,
+  FormDataValues,
+  Method,
+  OptimisticCallback,
+  Progress,
+  RequestPayload,
+  router,
+  UrlMethodPair,
+  UseFormArguments,
+  UseFormSubmitArguments,
+  UseFormSubmitOptions,
+  UseFormTransformCallback,
+  UseFormUtils,
+  UseFormWithPrecognitionArguments,
+  VisitOptions,
+} from '@inertiajs/core'
+import { cloneDeep } from 'es-toolkit'
+import { NamedInputEvent, PrecognitionPath, ValidationConfig, Validator } from 'laravel-precognition'
+import useFormState from './useFormState'
 
-type FormDataType = Record<string, FormDataConvertible>
-type FormOptions = Omit<VisitOptions, 'data'>
+// Reserved keys validation - logs console.error at runtime when form data keys conflict with form properties
+let reservedFormKeys: Set<string> | null = null
+let bootstrapping = false
 
-export interface InertiaFormProps<TForm extends FormDataType> {
+function validateFormDataKeys<TForm extends object>(data: TForm): void {
+  if (bootstrapping) {
+    return
+  }
+
+  if (reservedFormKeys === null) {
+    bootstrapping = true
+    reservedFormKeys = new Set(Object.keys(useForm({})))
+    bootstrapping = false
+  }
+
+  const conflicts = Object.keys(data).filter((key) => reservedFormKeys!.has(key))
+  if (conflicts.length > 0) {
+    console.error(
+      `[Inertia] useForm() data contains field(s) that conflict with form properties: ${conflicts.map((k) => `"${k}"`).join(', ')}. ` +
+        `These fields will be overwritten by form methods/properties. Please rename these fields.`,
+    )
+  }
+}
+
+export interface InertiaFormProps<TForm extends object> {
   isDirty: boolean
-  errors: Partial<Record<keyof TForm, string>>
+  errors: FormDataErrors<TForm>
   hasErrors: boolean
   processing: boolean
   progress: Progress | null
   wasSuccessful: boolean
   recentlySuccessful: boolean
   data(): TForm
-  transform(callback: (data: TForm) => object): this
+  transform(callback: UseFormTransformCallback<TForm>): this
   defaults(): this
-  defaults(field: keyof TForm, value: FormDataConvertible): this
+  defaults<T extends FormDataKeys<TForm>>(field: T, value: FormDataValues<TForm, T>): this
   defaults(fields: Partial<TForm>): this
-  reset(...fields: (keyof TForm)[]): this
-  clearErrors(...fields: (keyof TForm)[]): this
-  setError(field: keyof TForm, value: string): this
-  setError(errors: Record<keyof TForm, string>): this
-  submit(method: Method, url: string, options?: FormOptions): void
-  get(url: string, options?: FormOptions): void
-  post(url: string, options?: FormOptions): void
-  put(url: string, options?: FormOptions): void
-  patch(url: string, options?: FormOptions): void
-  delete(url: string, options?: FormOptions): void
+  reset<K extends FormDataKeys<TForm>>(...fields: K[]): this
+  clearErrors<K extends FormDataKeys<TForm>>(...fields: K[]): this
+  resetAndClearErrors<K extends FormDataKeys<TForm>>(...fields: K[]): this
+  setError<K extends FormDataKeys<TForm>>(field: K, value: ErrorValue): this
+  setError(errors: FormDataErrors<TForm>): this
+  submit: (...args: UseFormSubmitArguments) => void
+  get(url: string, options?: UseFormSubmitOptions): void
+  post(url: string, options?: UseFormSubmitOptions): void
+  put(url: string, options?: UseFormSubmitOptions): void
+  patch(url: string, options?: UseFormSubmitOptions): void
+  delete(url: string, options?: UseFormSubmitOptions): void
   cancel(): void
+  dontRemember<K extends FormDataKeys<TForm>>(...fields: K[]): this
+  optimistic<TProps>(callback: OptimisticCallback<TProps>): this
+  withPrecognition(...args: UseFormWithPrecognitionArguments): InertiaPrecognitiveForm<TForm>
 }
 
-export type InertiaForm<TForm extends FormDataType> = TForm & InertiaFormProps<TForm>
+type PrecognitionValidationConfig<TKeys> = ValidationConfig & {
+  only?: TKeys[] | Iterable<TKeys> | ArrayLike<TKeys>
+}
 
-export default function useForm<TForm extends FormDataType>(data: TForm | (() => TForm)): InertiaForm<TForm>
-export default function useForm<TForm extends FormDataType>(
+export interface InertiaFormValidationProps<TForm extends object> {
+  invalid<K extends FormDataKeys<TForm>>(field: K): boolean
+  setValidationTimeout(duration: number): this
+  touch<K extends FormDataKeys<TForm>>(field: K | NamedInputEvent | Array<K>, ...fields: K[]): this
+  touched<K extends FormDataKeys<TForm>>(field?: K): boolean
+  valid<K extends FormDataKeys<TForm>>(field: K): boolean
+  validate<K extends FormDataKeys<TForm> | PrecognitionPath<TForm>>(
+    field?: K | NamedInputEvent | PrecognitionValidationConfig<K>,
+    config?: PrecognitionValidationConfig<K>,
+  ): this
+  validateFiles(): this
+  validating: boolean
+  validator: () => Validator
+  withAllErrors(): this
+  withoutFileValidation(): this
+  // Backward compatibility for easy migration from the original Precognition libraries
+  setErrors(errors: FormDataErrors<TForm> | Record<string, string | string[]>): this
+  forgetError<K extends FormDataKeys<TForm> | NamedInputEvent>(field: K): this
+}
+
+interface InternalPrecognitionState {
+  __touched: string[]
+  __valid: string[]
+}
+
+export type InertiaForm<TForm extends object> = TForm & InertiaFormProps<TForm>
+export type InertiaPrecognitiveForm<TForm extends object> = InertiaForm<TForm> &
+  InertiaFormValidationProps<TForm> &
+  InternalPrecognitionState
+
+type ReservedFormKeys = keyof InertiaFormProps<any>
+
+type ValidateFormData<T> = {
+  [K in keyof T]: K extends ReservedFormKeys ? ['Error: This field name is reserved by useForm:', K] : T[K]
+}
+
+export default function useForm<TForm extends FormDataType<TForm> & ValidateFormData<TForm>>(
+  method: Method | (() => Method),
+  url: string | (() => string),
+  data: TForm | (() => TForm),
+): InertiaPrecognitiveForm<TForm>
+export default function useForm<TForm extends FormDataType<TForm> & ValidateFormData<TForm>>(
+  urlMethodPair: UrlMethodPair | (() => UrlMethodPair),
+  data: TForm | (() => TForm),
+): InertiaPrecognitiveForm<TForm>
+export default function useForm<TForm extends FormDataType<TForm> & ValidateFormData<TForm>>(
   rememberKey: string,
   data: TForm | (() => TForm),
 ): InertiaForm<TForm>
-export default function useForm<TForm extends FormDataType>(
-  rememberKeyOrData: string | TForm | (() => TForm),
-  maybeData?: TForm | (() => TForm),
-): InertiaForm<TForm> {
-  const rememberKey = typeof rememberKeyOrData === 'string' ? rememberKeyOrData : null
-  const data = (typeof rememberKeyOrData === 'string' ? maybeData : rememberKeyOrData) ?? {}
-  const restored = rememberKey
-    ? (router.restore(rememberKey) as { data: TForm; errors: Record<keyof TForm, string> })
-    : null
-  let defaults = typeof data === 'function' ? cloneDeep(data()) : cloneDeep(data)
-  let cancelToken = null
-  let recentlySuccessfulTimeoutId = null
-  let transform = (data) => data
+export default function useForm<TForm extends FormDataType<TForm> & ValidateFormData<TForm>>(
+  data: TForm | (() => TForm),
+): InertiaForm<TForm>
+export default function useForm<TForm extends FormDataType<TForm>>(): InertiaForm<TForm>
+export default function useForm<TForm extends FormDataType<TForm>>(
+  ...args: UseFormArguments<TForm>
+): InertiaForm<TForm> | InertiaPrecognitiveForm<TForm> {
+  const { rememberKey, data, precognitionEndpoint } = UseFormUtils.parseUseFormArguments<TForm>(...args)
 
-  const form = reactive({
-    ...(restored ? restored.data : cloneDeep(defaults)),
-    isDirty: false,
-    errors: restored ? restored.errors : {},
-    hasErrors: false,
-    processing: false,
-    progress: null,
-    wasSuccessful: false,
-    recentlySuccessful: false,
-    data() {
-      return (Object.keys(defaults) as Array<keyof TForm>).reduce((carry, key) => {
-        carry[key] = this[key]
-        return carry
-      }, {} as Partial<TForm>) as TForm
-    },
-    transform(callback) {
-      transform = callback
+  const initialDefaults = typeof data === 'function' ? cloneDeep(data()) : cloneDeep(data)
+  validateFormDataKeys(initialDefaults)
 
-      return this
-    },
-    defaults(fieldOrFields?: keyof TForm | Partial<TForm>, maybeValue?: FormDataConvertible) {
-      if (typeof data === 'function') {
-        throw new Error('You cannot call `defaults()` when using a function to define your form data.')
-      }
+  let cancelToken: CancelToken | null = null
+  let pendingOptimisticCallback: OptimisticCallback | null = null
 
-      if (typeof fieldOrFields === 'undefined') {
-        defaults = this.data()
-        this.isDirty = false
-      } else {
-        defaults = Object.assign(
-          {},
-          cloneDeep(defaults),
-          typeof fieldOrFields === 'string' ? { [fieldOrFields]: maybeValue } : fieldOrFields,
-        )
-      }
+  const {
+    form: baseForm,
+    setDefaults,
+    getTransform,
+    getPrecognitionEndpoint,
+    markAsSuccessful,
+    wasDefaultsCalledInOnSuccess,
+    resetDefaultsCalledInOnSuccess,
+    setRememberExcludeKeys,
+    resetBeforeSubmit,
+    finishProcessing,
+  } = useFormState<TForm>({
+    data,
+    rememberKey,
+    precognitionEndpoint,
+  })
 
-      return this
-    },
-    reset(...fields) {
-      const resolvedData = typeof data === 'function' ? cloneDeep(data()) : cloneDeep(defaults)
-      const clonedData = cloneDeep(resolvedData)
-      if (fields.length === 0) {
-        defaults = clonedData
-        Object.assign(this, resolvedData)
-      } else {
-        Object.keys(resolvedData)
-          .filter((key) => fields.includes(key))
-          .forEach((key) => {
-            defaults[key] = clonedData[key]
-            this[key] = resolvedData[key]
-          })
-      }
+  // Cast needed: baseForm has all form state/methods, we're adding submit methods below via Object.assign
+  const form = baseForm as unknown as InertiaForm<TForm>
 
-      return this
-    },
-    setError(fieldOrFields: keyof TForm | Record<keyof TForm, string>, maybeValue?: string) {
-      Object.assign(this.errors, typeof fieldOrFields === 'string' ? { [fieldOrFields]: maybeValue } : fieldOrFields)
+  const createSubmitMethod =
+    (method: Method) =>
+    (url: string, options: VisitOptions = {}) => {
+      form.submit(method, url, options)
+    }
 
-      this.hasErrors = Object.keys(this.errors).length > 0
+  Object.assign(form, {
+    submit(...args: UseFormSubmitArguments) {
+      const { method, url, options } = UseFormUtils.parseSubmitArguments(args, getPrecognitionEndpoint())
 
-      return this
-    },
-    clearErrors(...fields) {
-      this.errors = Object.keys(this.errors).reduce(
-        (carry, field) => ({
-          ...carry,
-          ...(fields.length > 0 && !fields.includes(field) ? { [field]: this.errors[field] } : {}),
-        }),
-        {},
-      )
+      resetDefaultsCalledInOnSuccess()
 
-      this.hasErrors = Object.keys(this.errors).length > 0
-
-      return this
-    },
-    submit(method, url, options: FormOptions = {}) {
-      const data = transform(this.data())
-      const _options = {
+      const _options: VisitOptions = {
         ...options,
         onCancelToken: (token) => {
           cancelToken = token
 
-          if (options.onCancelToken) {
-            return options.onCancelToken(token)
-          }
+          return options.onCancelToken?.(token)
         },
         onBefore: (visit) => {
-          this.wasSuccessful = false
-          this.recentlySuccessful = false
-          clearTimeout(recentlySuccessfulTimeoutId)
+          resetBeforeSubmit()
 
-          if (options.onBefore) {
-            return options.onBefore(visit)
-          }
+          return options.onBefore?.(visit)
         },
         onStart: (visit) => {
-          this.processing = true
+          form.processing = true
 
-          if (options.onStart) {
-            return options.onStart(visit)
-          }
+          return options.onStart?.(visit)
         },
         onProgress: (event) => {
-          this.progress = event
+          form.progress = event ?? null
 
-          if (options.onProgress) {
-            return options.onProgress(event)
-          }
+          return options.onProgress?.(event)
         },
         onSuccess: async (page) => {
-          this.processing = false
-          this.progress = null
-          this.clearErrors()
-          this.wasSuccessful = true
-          this.recentlySuccessful = true
-          recentlySuccessfulTimeoutId = setTimeout(() => (this.recentlySuccessful = false), 2000)
+          markAsSuccessful()
 
           const onSuccess = options.onSuccess ? await options.onSuccess(page) : null
-          defaults = cloneDeep(this.data())
-          this.isDirty = false
+
+          if (!wasDefaultsCalledInOnSuccess()) {
+            setDefaults(cloneDeep(form.data()))
+            form.isDirty = false
+          }
+
           return onSuccess
         },
         onError: (errors) => {
-          this.processing = false
-          this.progress = null
-          this.clearErrors().setError(errors)
+          form.clearErrors().setError(errors as FormDataErrors<TForm>)
 
-          if (options.onError) {
-            return options.onError(errors)
-          }
+          return options.onError?.(errors)
         },
         onCancel: () => {
-          this.processing = false
-          this.progress = null
-
-          if (options.onCancel) {
-            return options.onCancel()
-          }
+          return options.onCancel?.()
         },
         onFinish: (visit) => {
-          this.processing = false
-          this.progress = null
+          finishProcessing()
           cancelToken = null
 
-          if (options.onFinish) {
-            return options.onFinish(visit)
-          }
+          return options.onFinish?.(visit)
         },
       }
 
+      _options.optimistic = _options.optimistic ?? pendingOptimisticCallback ?? undefined
+      pendingOptimisticCallback = null
+
+      const transformedData = getTransform()(form.data()) as RequestPayload
+
       if (method === 'delete') {
-        router.delete(url, { ..._options, data })
+        router.delete(url, { ..._options, data: transformedData })
       } else {
-        router[method](url, data, _options)
+        router[method](url, transformedData, _options)
       }
     },
-    get(url, options) {
-      this.submit('get', url, options)
-    },
-    post(url, options) {
-      this.submit('post', url, options)
-    },
-    put(url, options) {
-      this.submit('put', url, options)
-    },
-    patch(url, options) {
-      this.submit('patch', url, options)
-    },
-    delete(url, options) {
-      this.submit('delete', url, options)
-    },
+
+    get: createSubmitMethod('get'),
+    post: createSubmitMethod('post'),
+    put: createSubmitMethod('put'),
+    patch: createSubmitMethod('patch'),
+    delete: createSubmitMethod('delete'),
+
     cancel() {
       if (cancelToken) {
         cancelToken.cancel()
       }
     },
-    __rememberable: rememberKey === null,
-    __remember() {
-      return { data: this.data(), errors: this.errors }
+
+    dontRemember(...keys: FormDataKeys<TForm>[]) {
+      setRememberExcludeKeys(keys)
+      return form
     },
-    __restore(restored) {
-      Object.assign(this, restored.data)
-      this.setError(restored.errors)
+
+    optimistic<TProps>(callback: OptimisticCallback<TProps>) {
+      pendingOptimisticCallback = callback as OptimisticCallback
+      return form
     },
   })
 
-  watch(
-    form,
-    (newValue) => {
-      form.isDirty = !isEqual(form.data(), defaults)
-      if (rememberKey) {
-        router.remember(cloneDeep(newValue.__remember()), rememberKey)
-      }
-    },
-    { immediate: true, deep: true },
-  )
-
-  return form
+  return getPrecognitionEndpoint() ? (form as InertiaPrecognitiveForm<TForm>) : form
 }

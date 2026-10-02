@@ -1,13 +1,13 @@
-<script>
+<script setup lang="ts">
+import { Link } from '@inertiajs/vue3'
+import type { Component, VNode } from 'vue'
 import Layout from '@/Layouts/SiteLayout.vue'
 
-export default {
-  layout: (h, page) => h(Layout, [page]),
-}
-</script>
+type RenderFunction = (component: Component, children: Component[]) => VNode
 
-<script setup>
-import { Link } from '@inertiajs/vue3'
+defineOptions({
+  layout: (h: RenderFunction, page: Component) => h(Layout, [page]),
+})
 </script>
 
 <template>

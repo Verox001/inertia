@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { router } from '@inertiajs/svelte'
 
   const { start, stop } = router.poll(
@@ -15,5 +15,5 @@
   )
 </script>
 
-<button on:click={() => start()}>Start</button>
-<button on:click={() => stop()}>Stop</button>
+<button onclick={() => start()}>Start</button>
+<button onclick={() => stop()}>Stop</button>

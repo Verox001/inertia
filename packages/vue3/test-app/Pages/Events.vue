@@ -1,5 +1,11 @@
-<script setup>
+<script setup lang="ts">
 import { Link, router, usePage } from '@inertiajs/vue3'
+
+declare global {
+  interface Window {
+    messages: unknown[]
+  }
+}
 
 const payloadWithFile = {
   file: new File(['foobar'], 'example.bin'),
@@ -9,7 +15,7 @@ const page = usePage()
 
 window.messages = []
 
-const internalAlert = (...args) => {
+const internalAlert = (...args: unknown[]) => {
   window.messages.push(...args)
 }
 
@@ -31,6 +37,22 @@ const removeInertiaListener = () => {
       onStart: () => internalAlert('onStart'),
     },
   )
+}
+
+const onceInertiaListener = () => {
+  router.once('before', () => internalAlert('Inertia.once(before)'))
+
+  router.post(page.url, {}, { onBefore: () => internalAlert('onBefore-1') })
+  router.post(page.url, {}, { onBefore: () => internalAlert('onBefore-2') })
+}
+
+const removeOnceInertiaListener = () => {
+  const removeEventListener = router.once('before', () => internalAlert('Inertia.once(before)'))
+
+  internalAlert('Removing Inertia.once Listener')
+  removeEventListener()
+
+  router.post(page.url, {}, { onBefore: () => internalAlert('onBefore') })
 }
 
 const beforeVisit = () => {
@@ -76,7 +98,7 @@ const beforeVisitPreventLocal = () => {
 
 const beforeVisitPreventGlobalInertia = () => {
   document.addEventListener('inertia:before', () => internalAlert('addEventListener(inertia:before)'))
-  router.on('before', (visit) => {
+  router.on('before', () => {
     internalAlert('Inertia.on(before)')
     return false
   })
@@ -109,6 +131,7 @@ const beforeVisitPreventGlobalNative = () => {
 }
 
 const cancelTokenVisit = () => {
+  // @ts-expect-error - We're testing that the router doesn't have an onCancelToken listener
   router.on('cancelToken', () => internalAlert('This listener should not have been called.'))
   document.addEventListener('inertia:cancelToken', () => internalAlert('This listener should not have been called.'))
 
@@ -206,6 +229,7 @@ const cancelVisit = () => {
     {},
     {
       onCancelToken: (token) => token.cancel(),
+      // @ts-expect-error - We're testing that the onCancel callback has no arguments, so event will be undefined
       onCancel: (event) => {
         internalAlert('onCancel')
         internalAlert(event)
@@ -308,14 +332,14 @@ const finishVisit = () => {
   )
 }
 
-const invalidVisit = () => {
-  router.on('invalid', (event) => {
-    internalAlert('Inertia.on(invalid)')
+const httpExceptionVisit = () => {
+  router.on('httpException', (event) => {
+    internalAlert('Inertia.on(httpException)')
     internalAlert(event)
   })
 
-  document.addEventListener('inertia:invalid', (event) => {
-    internalAlert('addEventListener(inertia:invalid)')
+  document.addEventListener('inertia:httpException', (event) => {
+    internalAlert('addEventListener(inertia:httpException)')
     internalAlert(event)
   })
 
@@ -323,19 +347,87 @@ const invalidVisit = () => {
     '/non-inertia',
     {},
     {
-      onInvalid: () => internalAlert('This listener should not have been called.'),
+      onHttpException: () => internalAlert('onHttpException'),
     },
   )
 }
 
-const exceptionVisit = () => {
-  router.on('exception', (event) => {
-    internalAlert('Inertia.on(exception)')
+const httpExceptionPreventVisit = () => {
+  router.on('httpException', (event) => {
+    internalAlert('Inertia.on(httpException)')
     internalAlert(event)
   })
 
-  document.addEventListener('inertia:exception', (event) => {
-    internalAlert('addEventListener(inertia:exception)')
+  document.addEventListener('inertia:httpException', (event) => {
+    internalAlert('addEventListener(inertia:httpException)')
+    internalAlert(event)
+  })
+
+  router.post(
+    '/non-inertia',
+    {},
+    {
+      onHttpException: (response) => {
+        internalAlert('onHttpException')
+        internalAlert(response)
+        return false
+      },
+    },
+  )
+}
+
+const httpExceptionInertiaResponseVisit = () => {
+  router.on('httpException', (event) => {
+    internalAlert('Inertia.on(httpException)')
+    internalAlert(event)
+  })
+
+  document.addEventListener('inertia:httpException', (event) => {
+    internalAlert('addEventListener(inertia:httpException)')
+    internalAlert(event)
+  })
+
+  router.get(
+    '/inertia-error-page',
+    {},
+    {
+      onHttpException: () => internalAlert('onHttpException'),
+    },
+  )
+}
+
+const httpExceptionInertiaResponsePreventVisit = () => {
+  router.on('httpException', (event) => {
+    internalAlert('Inertia.on(httpException)')
+    internalAlert(event)
+  })
+
+  document.addEventListener('inertia:httpException', (event) => {
+    internalAlert('addEventListener(inertia:httpException)')
+    internalAlert(event)
+  })
+
+  router.get(
+    '/inertia-error-page',
+    {},
+    {
+      onHttpException: (response) => {
+        internalAlert('onHttpException')
+        internalAlert(response)
+        return false
+      },
+    },
+  )
+}
+
+const networkErrorVisit = () => {
+  router.on('networkError', (event) => {
+    internalAlert('Inertia.on(networkError)')
+    internalAlert(event)
+  })
+
+  document.addEventListener('inertia:networkError', (event) => {
+    internalAlert('addEventListener(inertia:networkError)')
     internalAlert(event)
   })
 
@@ -343,9 +435,47 @@ const exceptionVisit = () => {
     '/disconnect',
     {},
     {
-      onException: () => internalAlert('This listener should not have been called.'),
+      onNetworkError: () => internalAlert('onNetworkError'),
     },
   )
+}
+
+const networkErrorPreventVisit = () => {
+  router.on('networkError', (event) => {
+    internalAlert('Inertia.on(networkError)')
+    internalAlert(event)
+  })
+
+  document.addEventListener('inertia:networkError', (event) => {
+    internalAlert('addEventListener(inertia:networkError)')
+    internalAlert(event)
+  })
+
+  router.post(
+    '/disconnect',
+    {},
+    {
+      onNetworkError: (error) => {
+        internalAlert('onNetworkError')
+        internalAlert(error)
+        return false
+      },
+    },
+  )
+}
+
+const linkHttpException = (response: { status: number }) => internalAlert('linkOnHttpException', response.status)
+
+const linkHttpExceptionPrevent = () => {
+  internalAlert('linkOnHttpException')
+  return false
+}
+
+const linkNetworkError = (error: Error) => internalAlert('linkOnNetworkError', error.message)
+
+const linkNetworkErrorPrevent = () => {
+  internalAlert('linkOnNetworkError')
+  return false
 }
 
 const navigateVisit = () => {
@@ -363,6 +493,7 @@ const navigateVisit = () => {
     '/',
     {},
     {
+      // @ts-expect-error - We're testing that the VisitCallbacks interface does not have an onNavigate method
       onNavigate: () => internalAlert('This listener should not have been called.'),
     },
   )
@@ -370,14 +501,15 @@ const navigateVisit = () => {
 
 const registerAllListeners = () => {
   router.on('before', () => internalAlert('Inertia.on(before)'))
+  // @ts-expect-error - We're testing that the router doesn't have an onCancelToken listener
   router.on('cancelToken', () => internalAlert('Inertia.on(cancelToken)'))
   router.on('cancel', () => internalAlert('Inertia.on(cancel)'))
   router.on('start', () => internalAlert('Inertia.on(start)'))
   router.on('progress', () => internalAlert('Inertia.on(progress)'))
   router.on('error', () => internalAlert('Inertia.on(error)'))
   router.on('success', () => internalAlert('Inertia.on(success)'))
-  router.on('invalid', () => internalAlert('Inertia.on(invalid)'))
-  router.on('exception', () => internalAlert('Inertia.on(exception)'))
+  router.on('httpException', () => internalAlert('Inertia.on(httpException)'))
+  router.on('networkError', () => internalAlert('Inertia.on(networkError)'))
   router.on('finish', () => internalAlert('Inertia.on(finish)'))
   router.on('navigate', () => internalAlert('Inertia.on(navigate)'))
   document.addEventListener('inertia:before', () => internalAlert('addEventListener(inertia:before)'))
@@ -387,8 +519,8 @@ const registerAllListeners = () => {
   document.addEventListener('inertia:progress', () => internalAlert('addEventListener(inertia:progress)'))
   document.addEventListener('inertia:error', () => internalAlert('addEventListener(inertia:error)'))
   document.addEventListener('inertia:success', () => internalAlert('addEventListener(inertia:success)'))
-  document.addEventListener('inertia:invalid', () => internalAlert('addEventListener(inertia:invalid)'))
-  document.addEventListener('inertia:exception', () => internalAlert('addEventListener(inertia:exception)'))
+  document.addEventListener('inertia:httpException', () => internalAlert('addEventListener(inertia:httpException)'))
+  document.addEventListener('inertia:networkError', () => internalAlert('addEventListener(inertia:networkError)'))
   document.addEventListener('inertia:finish', () => internalAlert('addEventListener(inertia:finish)'))
   document.addEventListener('inertia:navigate', () => internalAlert('addEventListener(inertia:navigate)'))
 
@@ -400,8 +532,8 @@ const registerAllListeners = () => {
     onProgress: () => internalAlert('onProgress'),
     onError: () => internalAlert('onError'),
     onSuccess: () => internalAlert('onSuccess'),
-    onInvalid: () => internalAlert('onInvalid'), // Does not exist.
-    onException: () => internalAlert('onException'), // Does not exist.
+    onHttpException: () => internalAlert('onHttpException'),
+    onNetworkError: () => internalAlert('onNetworkError'),
     onFinish: () => internalAlert('onFinish'),
     onNavigate: () => internalAlert('onNavigate'), // Does not exist.
   }
@@ -424,29 +556,33 @@ const lifecycleCancel = () => {
       setTimeout(() => {
         internalAlert('CANCELLING!')
         token.cancel()
-      }, 10)
+      }, 250)
     },
   })
 }
 
 const lifecycleCancelAfterFinish = () => {
-  let cancelToken = null
+  type CancelToken = {
+    cancel: () => void
+  }
+
+  let cancelToken = <CancelToken | null>null
 
   router.post(page.url, payloadWithFile, {
     ...registerAllListeners(),
-    onCancelToken: (token) => {
+    onCancelToken: (token: CancelToken) => {
       internalAlert('onCancelToken')
       cancelToken = token
     },
     onFinish: () => {
       internalAlert('onFinish')
       internalAlert('CANCELLING!')
-      cancelToken.cancel()
+      cancelToken?.cancel()
     },
   })
 }
 
-const callbackSuccessErrorPromise = (eventName) => {
+const callbackSuccessErrorPromise = (eventName: string) => {
   internalAlert(eventName)
   setTimeout(() => internalAlert('onFinish should have been fired by now if Promise functionality did not work'), 5)
   return new Promise((resolve) => setTimeout(resolve, 20))
@@ -458,6 +594,12 @@ const callbackSuccessErrorPromise = (eventName) => {
     <!-- Listeners -->
     <a href="#" @click.prevent="withoutEventListeners" class="without-listeners">Basic Visit</a>
     <a href="#" @click.prevent="removeInertiaListener" class="remove-inertia-listener">Remove Inertia Listener</a>
+    <a href="#" @click.prevent="onceInertiaListener" class="register-inertia-once-listener"
+      >Register Inertia Once Listener</a
+    >
+    <a href="#" @click.prevent="removeOnceInertiaListener" class="remove-inertia-once-listener"
+      >Remove Inertia Once Listener</a
+    >
 
     <!-- Events: Before -->
     <a href="#" @click.prevent="beforeVisit" class="before">Before Event</a>
@@ -474,7 +616,7 @@ const callbackSuccessErrorPromise = (eventName) => {
       :href="$page.url"
       method="post"
       @before="
-        (visit) => {
+        () => {
           internalAlert('linkOnBefore')
           return false
         }
@@ -502,6 +644,8 @@ const callbackSuccessErrorPromise = (eventName) => {
 
     <!-- Events: Cancel -->
     <a href="#" @click.prevent="cancelVisit" class="cancel">Cancel Event</a>
+
+    <!-- @vue-expect-error - We're testing that the onCancel callback has no arguments, so event will be undefined -->
     <Link
       :href="$page.url"
       method="post"
@@ -581,11 +725,48 @@ const callbackSuccessErrorPromise = (eventName) => {
       >Success Event Link (delaying onFinish w/ Promise)</Link
     >
 
-    <!-- Events: Invalid -->
-    <a href="#" @click.prevent="invalidVisit" class="invalid">Invalid Event</a>
+    <!-- Events: Flash -->
+    <Link href="/events/flash" method="post" @flash="(flash) => internalAlert('linkOnFlash', flash)" class="link-flash"
+      >Flash Event Link</Link
+    >
 
-    <!-- Events: Exception -->
-    <a href="#" @click.prevent="exceptionVisit" class="exception">Exception Event</a>
+    <!-- Events: HTTP Exception -->
+    <a href="#" @click.prevent="httpExceptionVisit" class="http-exception">HTTP Exception Event</a>
+    <a href="#" @click.prevent="httpExceptionPreventVisit" class="http-exception-prevent"
+      >HTTP Exception Event (Prevent)</a
+    >
+    <a href="#" @click.prevent="httpExceptionInertiaResponseVisit" class="http-exception-inertia-response"
+      >HTTP Exception Event (Inertia Response)</a
+    >
+    <a
+      href="#"
+      @click.prevent="httpExceptionInertiaResponsePreventVisit"
+      class="http-exception-inertia-response-prevent"
+      >HTTP Exception Event (Inertia Response Prevent)</a
+    >
+
+    <Link href="/non-inertia" method="post" @http-exception="linkHttpException" class="link-http-exception"
+      >HTTP Exception Event Link</Link
+    >
+    <Link
+      href="/non-inertia"
+      method="post"
+      @http-exception="linkHttpExceptionPrevent"
+      class="link-http-exception-prevent"
+      >HTTP Exception Event Link (Prevent)</Link
+    >
+
+    <!-- Events: Network Error -->
+    <a href="#" @click.prevent="networkErrorVisit" class="network-error">Network Error Event</a>
+    <a href="#" @click.prevent="networkErrorPreventVisit" class="network-error-prevent"
+      >Network Error Event (Prevent)</a
+    >
+    <Link href="/disconnect" method="post" @network-error="linkNetworkError" class="link-network-error"
+      >Network Error Event Link</Link
+    >
+    <Link href="/disconnect" method="post" @network-error="linkNetworkErrorPrevent" class="link-network-error-prevent"
+      >Network Error Event Link (Prevent)</Link
+    >
 
     <!-- Events: Finish -->
     <a href="#" @click.prevent="finishVisit" class="finish">Finish Event</a>
@@ -595,6 +776,18 @@ const callbackSuccessErrorPromise = (eventName) => {
 
     <!-- Events: Navigate -->
     <a href="#" @click.prevent="navigateVisit" class="navigate">Navigate Event</a>
+
+    <!-- Events: Prefetch -->
+    <Link
+      as="button"
+      href="/prefetch/2"
+      prefetch="hover"
+      @prefetching="(visit) => internalAlert('linkOnPrefetching', visit)"
+      @prefetched="(response, visit) => internalAlert('linkOnPrefetched', response, visit)"
+      class="link-prefetch-hover"
+    >
+      Prefetch Event Link (Hover)
+    </Link>
 
     <!-- Lifecycles -->
     <a href="#" @click.prevent="lifecycleSuccess" class="lifecycle-success">Lifecycle Success</a>

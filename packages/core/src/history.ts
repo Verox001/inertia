@@ -1,4 +1,6 @@
+import { cloneDeep, isEqual } from 'es-toolkit'
 import { decryptHistory, encryptHistory, historySessionStorageKeys } from './encryption'
+import { eventHandler } from './eventHandler'
 import { page as currentPage } from './page'
 import Queue from './queue'
 import { SessionStorage } from './sessionStorage'
@@ -18,7 +20,7 @@ class History {
 
   public remember(data: unknown, key: string): void {
     this.replaceState({
-      ...currentPage.get(),
+      ...currentPage.getWithoutFlashData(),
       rememberedState: {
         ...(currentPage.get()?.rememberedState ?? {}),
         [key]: data,
@@ -28,7 +30,9 @@ class History {
 
   public restore(key: string): unknown {
     if (!isServer) {
-      return this.initialState?.[this.rememberedState]?.[key]
+      return this.current[this.rememberedState]?.[key] !== undefined
+        ? this.current[this.rememberedState]?.[key]
+        : this.initialState?.[this.rememberedState]?.[key]
     }
   }
 
@@ -48,23 +52,38 @@ class History {
       return this.getPageData(page).then((data) => {
         // Defer history.pushState to the next event loop tick to prevent timing conflicts.
         // Ensure any previous history.replaceState completes before pushState is executed.
-        const doPush = () => {
-          this.doPushState({ page: data }, page.url)
-          cb && cb()
-        }
+        const doPush = () => this.doPushState({ page: data }, page.url).then(() => cb?.())
 
         if (isChromeIOS) {
-          setTimeout(doPush)
-        } else {
-          doPush()
+          return new Promise((resolve) => {
+            setTimeout(() => doPush().then(resolve))
+          })
         }
+
+        return doPush()
       })
     })
   }
 
+  protected clonePageProps(page: Page): Page {
+    try {
+      structuredClone(page.props)
+      return page
+    } catch {
+      // Props contain non-serializable data (e.g., Proxies, functions).
+      // Clone them to ensure they can be safely stored in browser history.
+      return {
+        ...page,
+        props: cloneDeep(page.props),
+      }
+    }
+  }
+
   protected getPageData(page: Page): Promise<Page | ArrayBuffer> {
+    const pageWithClonedProps = this.clonePageProps(page)
+
     return new Promise((resolve) => {
-      return page.encryptHistory ? encryptHistory(page).then(resolve) : resolve(page)
+      return page.encryptHistory ? encryptHistory(pageWithClonedProps).then(resolve) : resolve(pageWithClonedProps)
     })
   }
 
@@ -105,13 +124,14 @@ class History {
           return
         }
 
-        this.doReplaceState(
-          {
-            page: window.history.state.page,
-            scrollRegions,
-          },
-          this.current.url!,
-        )
+        if (isEqual(this.getScrollRegions(), scrollRegions)) {
+          return
+        }
+
+        return this.doReplaceState({
+          page: window.history.state.page,
+          scrollRegions,
+        })
       })
     })
   }
@@ -119,27 +139,40 @@ class History {
   public saveDocumentScrollPosition(scrollRegion: ScrollRegion): void {
     queue.add(() => {
       return Promise.resolve().then(() => {
-        this.doReplaceState(
-          {
-            page: window.history.state.page,
-            documentScrollPosition: scrollRegion,
-          },
-          this.current.url!,
-        )
+        if (!window.history.state?.page) {
+          return
+        }
+
+        if (isEqual(this.getDocumentScrollPosition(), scrollRegion)) {
+          return
+        }
+
+        return this.doReplaceState({
+          page: window.history.state.page,
+          documentScrollPosition: scrollRegion,
+        })
       })
     })
   }
 
   public getScrollRegions(): ScrollRegion[] {
-    return window.history.state.scrollRegions || []
+    return window.history.state?.scrollRegions || []
   }
 
   public getDocumentScrollPosition(): ScrollRegion {
-    return window.history.state.documentScrollPosition || { top: 0, left: 0 }
+    return window.history.state?.documentScrollPosition || { top: 0, left: 0 }
   }
 
   public replaceState(page: Page, cb: (() => void) | null = null): void {
-    currentPage.merge(page)
+    if (isEqual(this.current, page)) {
+      cb && cb()
+      return
+    }
+
+    // Exclude flash from the merge to prevent callers (like router.remember())
+    // from accidentally clearing flash data on the current page.
+    const { flash, ...pageWithoutFlash } = page
+    currentPage.merge(pageWithoutFlash)
 
     if (isServer) {
       return
@@ -156,17 +189,42 @@ class History {
       return this.getPageData(page).then((data) => {
         // Defer history.replaceState to the next event loop tick to prevent timing conflicts.
         // Ensure any previous history.pushState completes before replaceState is executed.
-        const doReplace = () => {
-          this.doReplaceState({ page: data }, page.url)
-          cb && cb()
-        }
+        const doReplace = () => this.doReplaceState({ page: data }, page.url).then(() => cb?.())
 
         if (isChromeIOS) {
-          setTimeout(doReplace)
-        } else {
-          doReplace()
+          return new Promise((resolve) => {
+            setTimeout(() => doReplace().then(resolve))
+          })
         }
+
+        return doReplace()
       })
+    })
+  }
+
+  protected isHistoryThrottleError(error: unknown): error is Error & { name: 'SecurityError' } {
+    return (
+      error instanceof Error &&
+      error.name === 'SecurityError' &&
+      (error.message.includes('history.pushState') || error.message.includes('history.replaceState'))
+    )
+  }
+
+  protected isQuotaExceededError(error: unknown): error is Error & { name: 'QuotaExceededError' } {
+    return error instanceof Error && error.name === 'QuotaExceededError'
+  }
+
+  protected withThrottleProtection<T = void>(cb: () => T): Promise<T | undefined> {
+    return Promise.resolve().then(() => {
+      try {
+        return cb()
+      } catch (error) {
+        if (!this.isHistoryThrottleError(error)) {
+          throw error
+        }
+
+        console.error(error.message)
+      }
     })
   }
 
@@ -176,17 +234,19 @@ class History {
       scrollRegions?: ScrollRegion[]
       documentScrollPosition?: ScrollRegion
     },
-    url: string,
-  ): void {
-    window.history.replaceState(
-      {
-        ...data,
-        scrollRegions: data.scrollRegions ?? window.history.state?.scrollRegions,
-        documentScrollPosition: data.documentScrollPosition ?? window.history.state?.documentScrollPosition,
-      },
-      '',
-      url,
-    )
+    url?: string,
+  ): Promise<void> {
+    return this.withThrottleProtection(() => {
+      window.history.replaceState(
+        {
+          ...data,
+          scrollRegions: data.scrollRegions ?? window.history.state?.scrollRegions,
+          documentScrollPosition: data.documentScrollPosition ?? window.history.state?.documentScrollPosition,
+        },
+        '',
+        url,
+      )
+    })
   }
 
   protected doPushState(
@@ -196,8 +256,18 @@ class History {
       documentScrollPosition?: ScrollRegion
     },
     url: string,
-  ): void {
-    window.history.pushState(data, '', url)
+  ): Promise<void> {
+    return this.withThrottleProtection(() => {
+      try {
+        window.history.pushState(data, '', url)
+      } catch (error) {
+        if (!this.isQuotaExceededError(error)) {
+          throw error
+        }
+
+        eventHandler.fireInternalEvent('historyQuotaExceeded', url)
+      }
+    })
   }
 
   public getState<T>(key: keyof Page, defaultValue?: T): any {
@@ -211,8 +281,14 @@ class History {
     }
   }
 
-  public hasAnyState(): boolean {
-    return !!this.getAllState()
+  public clearInitialState(key: keyof Page) {
+    if (this.initialState && this.initialState[key] !== undefined) {
+      delete this.initialState[key]
+    }
+  }
+
+  public browserHasHistoryEntry(): boolean {
+    return !isServer && !!window.history.state?.page
   }
 
   public clear() {

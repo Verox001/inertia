@@ -1,12 +1,13 @@
-<script lang="ts">
+<script setup lang="ts">
+import type { Component, VNode } from 'vue'
 import Layout from '@/Layouts/Prefetch.vue'
 
-export default {
-  layout: (h, page) => h(Layout, [page]),
-}
-</script>
+type RenderFunction = (component: Component, children: Component[]) => VNode
 
-<script setup lang="ts">
+defineOptions({
+  layout: (h: RenderFunction, page: Component) => h(Layout, [page]),
+})
+
 defineProps<{
   pageNumber: string
   lastLoaded: number

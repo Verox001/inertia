@@ -4,24 +4,25 @@
     "rootDir": "src",
     "noEmitOnError": true,
 
-    "lib": ["DOM", "DOM.Iterable", "ES2020"],
-    "target": "ES2020",
-    "types": ["node"],
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "target": "ES2022",
 
     "declaration": true,
     "declarationDir": "types",
+    "emitDeclarationOnly": true,
 
-    "module": "ES2020",
-    "moduleResolution": "Node",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
 
     "noImplicitThis": false,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "preserveConstEnums": true,
     "removeComments": true,
-    "typeRoots": ["./node_modules/@types"]
-    // "strict": true
+    "typeRoots": ["./node_modules/@types"],
+    "strict": true
   }
 }

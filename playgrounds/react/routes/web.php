@@ -1,8 +1,22 @@
 <?php
 
+use App\Http\Requests\BigIntegerFormRequest;
+use App\Http\Requests\PrecognitionFormRequest;
+use App\Models\ChatMessage;
+use App\Models\Todo;
+use Illuminate\Foundation\Http\Middleware\HandlePrecognitiveRequests;
+use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
+use Laravel\Ai\Enums\Lab;
+use Laravel\Ai\Messages\Message;
+use Laravel\Ai\Messages\MessageRole;
+use Laravel\Ai\Streaming\Events\TextDelta;
+
+use function Laravel\Ai\agent;
 
 /*
 |--------------------------------------------------------------------------
@@ -74,13 +88,53 @@ Route::get('/form', function () {
     return inertia('Form');
 });
 
+Route::get('/form-component', function () {
+    return inertia('FormComponent', [
+        'foo' => fn () => now()->getTimestampMs(),
+        'bar' => fn () => now()->getTimestampMs(),
+        'quux' => fn () => now()->getTimestampMs(),
+    ]);
+});
+
+Route::post('/form-component', function () {
+    $data = request()->validateWithBag('custom-bag', [
+        'name' => ['required', 'string', 'max:255'],
+        'avatar' => ['nullable', 'file', 'image', 'max:2048'],
+        'skills' => ['nullable', 'array', 'min:2'],
+        'skills.*' => ['string', 'in:vue,react,laravel,tailwind'],
+        'tags' => ['nullable', 'array'],
+        'tags.*' => ['string', 'max:50'],
+        'user.address.street' => ['nullable', 'string', 'max:255'],
+        'user.address.city' => ['nullable', 'string', 'max:255'],
+    ]);
+
+    // Simulate file upload progress
+    if (request()->hasFile('avatar')) {
+        sleep(1);
+    }
+
+    return back();
+});
+
+Route::get('/form-component/precognition', function () {
+    return inertia('FormComponentPrecognition');
+});
+
+Route::post('/form-component/precognition', function (PrecognitionFormRequest $request) {
+    $data = $request->validated();
+
+    // dd($data);
+
+    return back();
+})->middleware([HandlePrecognitiveRequests::class]);
+
 Route::post('/user', function () {
     return inertia('User', [
         'user' => request()->validate([
             'name' => ['required'],
             'company' => ['required'],
             'role' => ['required', 'in:User,Admin,Super'],
-        ])
+        ]),
     ]);
 });
 
@@ -92,10 +146,9 @@ Route::post('/logout', function () {
     return redirect('/login');
 });
 
-
 Route::get('/async', function () {
     return inertia('Async', [
-        'sleep' => Inertia::lazy(function () {
+        'sleep' => Inertia::optional(function () {
             sleep(4);
         }),
         'jonathan' => Cache::get('jonathan', false),
@@ -112,7 +165,7 @@ Route::post('/async/checkbox', function () {
     Cache::put('taylor', request('taylor'), 10);
     Cache::put('joe', request('joe'), 10);
 
-    if (!$previousJoe && request()->boolean('joe')) {
+    if (! $previousJoe && request()->boolean('joe')) {
         return redirect('article');
     }
 
@@ -120,10 +173,23 @@ Route::post('/async/checkbox', function () {
 });
 
 Route::get('/defer', function () {
-    info("defer route");
+    info('defer route');
+
     return inertia('Defer', [
+        'stats' => Inertia::defer(function () {
+            sleep(1);
+
+            if (! request()->hasHeader('X-Rescue-Prop-Success')) {
+                throw new RuntimeException('Failed to load stats.');
+            }
+
+            return [
+                'visitors' => 1287,
+                'revenue' => 4920,
+            ];
+        }, rescue: true),
         'users' => Inertia::defer(function () {
-            info("resolving users");
+            info('resolving users');
             sleep(1);
 
             return [
@@ -141,11 +207,11 @@ Route::get('/defer', function () {
                     'id' => 3,
                     'name' => 'Joe Tannenbaum',
                     'email' => 'yo@tannenbaum.edu',
-                ]
+                ],
             ];
         }, 'u'),
         'foods' => Inertia::defer(function () {
-            info("resolving foods");
+            info('resolving foods');
             sleep(3);
 
             return [
@@ -164,7 +230,7 @@ Route::get('/defer', function () {
             ];
         }, 'f'),
         'organizations' => Inertia::defer(function () {
-            info("resolving organizations");
+            info('resolving organizations');
             sleep(2);
 
             return [
@@ -189,9 +255,8 @@ Route::get('/defer', function () {
 });
 
 Route::get('/goodbye', function () {
-    return Inertia::location('https://inertiajs.com/redirects');
+    return Inertia::location('https://inertiajs.com/docs/v3/the-basics/redirects');
 });
-
 
 Route::get('/poll', function () {
     return inertia('Poll', [
@@ -222,10 +287,245 @@ Route::get('/elsewhere', function () {
 
 Route::get('/sleepy/{duration}', function ($duration) {
     sleep($duration);
+
     return inertia('Users');
 });
 
 Route::post('/sleepy/{duration}', function ($duration) {
     sleep($duration);
+
     return inertia('Article');
+});
+
+Route::post('/messages', function (Request $request) {
+    $data = $request->validate([
+        'message' => ['required', 'string'],
+    ]);
+
+    // Store the new user message
+    $prompt = ChatMessage::create([
+        'type' => 'prompt',
+        'content' => $data['message'],
+    ]);
+
+    /** @var Collection<int, Message> $messages */
+    $messages = ChatMessage::latest('id')
+        ->limit(10)
+        ->get()
+        ->reverse()
+        ->values()
+        ->map(function (ChatMessage $message) use ($prompt) {
+            $content = $message->content;
+
+            if ($message->is($prompt)) {
+                // Tell LLM not to answer too long and don't halucinate
+                $content = "Answer in max. 10 sentences, may be shorter. Code examples allowed when needed. Don't hallucinate, just answer based on the provided context.\n\n".$content;
+            }
+
+            return new Message(
+                $message->type === 'prompt' ? MessageRole::User : MessageRole::Assistant,
+                $content,
+            );
+        });
+
+    $stream = agent(messages: $messages->slice(0, -1))
+        ->stream($messages->last()->content, provider: Lab::Ollama, model: 'gemma3:4b')
+        ->then(function ($response) {
+            if (! blank($response->text)) {
+                ChatMessage::create([
+                    'type' => 'response',
+                    'content' => $response->text,
+                ]);
+            }
+        });
+
+    return response()->stream(function () use ($stream) {
+        foreach ($stream as $event) {
+            if ($event instanceof TextDelta) {
+                yield $event->delta;
+            }
+        }
+    });
+});
+
+Route::get('/chat', function () {
+    if (request()->header('X-Inertia-Partial-Component')) {
+        // Simulate latency for partial reloads
+        usleep(500_000);
+    }
+
+    return inertia('Chat', [
+        'messages' => Inertia::scroll(ChatMessage::latest('id')->cursorPaginate(10)),
+    ]);
+});
+
+Route::get('/photo-grid/{horizontal?}', function ($horizontal = null) {
+    if (request()->header('X-Inertia-Partial-Component')) {
+        // Simulate latency for partial reloads
+        usleep(250_000);
+    }
+
+    $perPage = 24;
+    $pages = 30;
+    $total = $perPage * $pages;
+    $page = request()->integer('page', 1);
+
+    $photos = collect()
+        ->range(1, $total)
+        ->forPage($page, $perPage)
+        ->map(fn ($i) => [
+            'id' => $i,
+            'url' => "https://picsum.photos/id/{$i}/300/300",
+        ])
+        ->pipe(fn ($photos) => new LengthAwarePaginator(
+            $photos->values(),
+            $total,
+            $perPage,
+            $page,
+        ));
+
+    return inertia($horizontal ? 'PhotoHorizontal' : 'PhotoGrid', [
+        'photos' => Inertia::scroll($photos),
+    ]);
+});
+
+Route::get('/data-table', function () {
+    if (request()->header('X-Inertia-Partial-Component')) {
+        // Simulate latency for partial reloads
+        usleep(500_000);
+    }
+
+    $perPage = 200;
+    $pages = 30;
+    $total = $perPage * $pages;
+    $page = request()->integer('page', 1);
+
+    $users = collect()
+        ->range(1, $total)
+        ->forPage($page, $perPage)
+        ->map(fn ($i) => [
+            'id' => $i,
+            'name' => "User {$i}",
+        ])
+        ->pipe(fn ($photos) => new LengthAwarePaginator(
+            $photos->values(),
+            $total,
+            $perPage,
+            $page,
+        ));
+
+    return inertia('DataTable', [
+        'users' => Inertia::scroll($users),
+    ]);
+});
+
+Route::get('/once/{page}', function (int $page) {
+    $component = match ($page) {
+        1 => 'Once/First',
+        2 => 'Once/Second',
+        3 => 'Once/Third',
+        4 => 'Once/Fourth',
+        default => abort(404),
+    };
+
+    return inertia($component, [
+        'foo' => Inertia::once(fn () => 'foo value: '.now()->getTimestampMs())->fresh($page === 3),
+        'bar' => Inertia::once(fn () => 'bar value: '.now()->getTimestampMs())->until(10),
+        'baz'.$page => Inertia::once(fn () => 'baz value: '.now()->getTimestampMs())->as('baz'),
+        'qux' => Inertia::defer(fn () => 'qux value: '.now()->getTimestampMs())->once(),
+    ]);
+});
+
+Route::get('/optimistic', function () {
+    return inertia('Optimistic', ['todos' => Todo::all()]);
+});
+
+Route::post('/optimistic', function () {
+    request()->validate(['name' => ['required', 'string', 'min:3']]);
+
+    Todo::create(['name' => request('name')]);
+
+    return back();
+});
+
+Route::patch('/optimistic/{todo}', function (Todo $todo) {
+    $todo->update(['done' => ! $todo->done]);
+
+    return back();
+});
+
+Route::delete('/optimistic/{todo}', function (Todo $todo) {
+    $todo->delete();
+
+    return back();
+});
+
+Route::post('/optimistic/reset', function () {
+    Todo::truncate();
+
+    return redirect('/optimistic');
+});
+
+Route::get('/flash', function () {
+    return inertia('Flash');
+});
+
+Route::get('/flash/direct', function () {
+    return Inertia::flash('message', 'Sent with render!')->render('Flash');
+});
+
+Route::post('/flash/form', function () {
+    return Inertia::flash('message', 'Sent with redirect!')->back();
+});
+
+Route::get('/error/{status}', function (int $status) {
+    abort($status);
+});
+
+Route::get('/ssr-debug', fn () => inertia('SsrDebug'));
+Route::get('/ssr-debug/window', fn () => inertia('SsrDebug/WindowError'));
+Route::get('/ssr-debug/document', fn () => inertia('SsrDebug/DocumentError'));
+Route::get('/ssr-debug/localstorage', fn () => inertia('SsrDebug/LocalStorageError'));
+
+Route::get('/big-integers', function () {
+    return inertia('BigIntegers', [
+        'safe' => 42,
+        'big' => 900719925474099988,
+        'negative' => -900719925474099988,
+        'maximum' => PHP_INT_MAX,
+        'boundary' => 9007199254740991,
+        'order' => [
+            'id' => 1234567890123456789,
+            'lines' => [
+                ['sku' => 'A-1', 'reference' => 900719925474099988],
+                ['sku' => 'B-2', 'reference' => 900719925474099989],
+            ],
+        ],
+        'wrapped' => (object) ['id' => 900719925474099988],
+    ]);
+});
+
+$bigIntegerDebug = fn (mixed $value): array => [
+    'received' => $value,
+    'type' => get_debug_type($value),
+];
+
+Route::post('/big-integers/echo', function (Request $request) use ($bigIntegerDebug) {
+    return Inertia::flash($bigIntegerDebug($request->input('id')))->back();
+});
+
+Route::post('/big-integers/validate', function (BigIntegerFormRequest $request) use ($bigIntegerDebug) {
+    return Inertia::flash($bigIntegerDebug($request->input('account_id')))->back();
+})->middleware([HandlePrecognitiveRequests::class]);
+
+Route::post('/big-integers/upload', function (Request $request) use ($bigIntegerDebug) {
+    $request->validate([
+        'account_id' => ['required', 'integer', 'min:1'],
+        'avatar' => ['required', 'file'],
+    ]);
+
+    return Inertia::flash([
+        ...$bigIntegerDebug($request->input('account_id')),
+        'avatar' => $request->file('avatar')->getClientOriginalName(),
+    ])->back();
 });

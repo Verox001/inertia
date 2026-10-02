@@ -1,17 +1,20 @@
 {
+  "exclude": ["tests"],
+  "include": ["src/**/*.ts"],
   "compilerOptions": {
     "rootDir": "src",
     "noEmitOnError": true,
 
-    "lib": ["DOM", "DOM.Iterable", "ES2020"],
-    "target": "ES2020",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "target": "ES2022",
     "types": ["node"],
 
     "declaration": true,
     "declarationDir": "types",
+    "emitDeclarationOnly": true,
 
-    "module": "ES2020",
-    "moduleResolution": "Node",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
 
@@ -23,6 +26,5 @@
     "typeRoots": ["./node_modules/@types"],
     "strict": true,
     "skipLibCheck": true
-  },
-  "exclude": ["tests", "vitest.config.ts"]
+  }
 }

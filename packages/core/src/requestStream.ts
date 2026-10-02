@@ -15,7 +15,7 @@ export class RequestStream {
   public send(request: Request) {
     this.requests.push(request)
 
-    request.send().then(() => {
+    request.send().finally(() => {
       this.requests = this.requests.filter((r) => r !== request)
     })
   }
@@ -24,25 +24,36 @@ export class RequestStream {
     this.cancel({ interrupted: true }, false)
   }
 
-  public cancelInFlight(): void {
-    this.cancel({ cancelled: true }, true)
+  public cancelInFlight(
+    options: { prefetch?: boolean; optimistic?: boolean } | ((request: Request) => boolean) = {},
+  ): void {
+    const shouldCancel =
+      typeof options === 'function'
+        ? options
+        : (request: Request) => {
+            const { prefetch = true, optimistic = true } = options
+
+            return (prefetch || !request.isPrefetch()) && (optimistic || !request.isOptimistic())
+          }
+
+    this.requests.filter(shouldCancel).forEach((request) => request.cancel({ cancelled: true }))
   }
 
-  protected cancel({ cancelled = false, interrupted = false } = {}, force: boolean): void {
-    if (!this.shouldCancel(force)) {
+  protected cancel({ cancelled = false, interrupted = false } = {}, force: boolean = false): void {
+    if (!force && !this.shouldCancel()) {
       return
     }
 
     const request = this.requests.shift()!
 
-    request?.cancel({ interrupted, cancelled })
+    request?.cancel({ cancelled, interrupted })
   }
 
-  protected shouldCancel(force: boolean): boolean {
-    if (force) {
-      return true
-    }
-
+  protected shouldCancel(): boolean {
     return this.interruptible && this.requests.length >= this.maxConcurrent
+  }
+
+  public hasPendingOptimistic(): boolean {
+    return this.requests.some((request) => request.isPendingOptimistic())
   }
 }

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { router } from '@inertiajs/vue3'
 
 const invalidVisit = () => {
@@ -8,11 +8,16 @@ const invalidVisit = () => {
 const invalidVisitJson = () => {
   router.post('/json')
 }
+
+const invalidVisitXss = () => {
+  router.post('/non-inertia/xss')
+}
 </script>
 
 <template>
   <div>
     <span @click="invalidVisit" class="invalid-visit">Invalid Visit</span>
     <span @click="invalidVisitJson" class="invalid-visit-json">Invalid Visit (JSON response)</span>
+    <span @click="invalidVisitXss" class="invalid-visit-xss">Invalid Visit (XSS)</span>
   </div>
 </template>
